@@ -1,0 +1,17 @@
+[package]
+name = "onebot-connect-interface"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde-value = {version = "*" }
+onebot-types = { git = "https://github.com/carolina-project/onebot-types.git"}
+thiserror = { version = "*" }
+futures-channel = { version = "*", optional = true }
+serde = { version = "*", optional = true }
+
+[features]
+default = ["client"]
+server = []
+client = []
+client_recv = ["client", "serde"]
