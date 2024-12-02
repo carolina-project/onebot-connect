@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+serde = { version = "*" }
 serde-value = {version = "*" }
-onebot-types = { git = "https://github.com/carolina-project/onebot-types.git"}
+onebot-types = { path = "../../onebot-types" }
 thiserror = { version = "*" }
-futures-channel = { version = "*", optional = true }
-serde = { version = "*", optional = true }
+futures = { version = "*", optional = true }
 
 [features]
 default = ["client"]
 server = []
 client = []
-client_recv = ["client", "serde"]
+client_recv = ["client", "futures"]

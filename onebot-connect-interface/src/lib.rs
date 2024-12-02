@@ -1,4 +1,5 @@
 use onebot_types::ob12::action::RespError;
+use serde_value::DeserializerError;
 use std::error::Error as ErrTrait;
 
 #[cfg(feature = "server")]
@@ -12,5 +13,13 @@ pub enum Error {
     #[error(transparent)]
     Resp(#[from] RespError),
     #[error(transparent)]
-    Other(#[from] Box<dyn ErrTrait>),
+    Deserializer(#[from] DeserializerError),
+    #[error(transparent)]
+    Other(Box<dyn ErrTrait>),
+}
+
+impl Error {
+    pub fn other<T: ErrTrait + 'static>(err: T) -> Self {
+        Self::Other(Box::new(err))
+    }
 }
