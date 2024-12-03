@@ -1,22 +1,21 @@
 use futures::{channel::mpsc, StreamExt};
-use onebot_connect_interface::client::EventSource;
-use onebot_types::ob12::event::Event;
+use onebot_connect_interface::client::{MessageSource, RecvMessage};
 
 pub mod client;
 pub mod compat;
 
-pub struct RxEventSource {
-    rx: mpsc::Receiver<Event>,
+pub struct RxMessageSource {
+    rx: mpsc::Receiver<RecvMessage>,
 }
 
-impl RxEventSource {
-    pub fn new(rx: mpsc::Receiver<Event>) -> Self {
+impl RxMessageSource {
+    pub fn new(rx: mpsc::Receiver<RecvMessage>) -> Self {
         Self { rx }
     }
 }
 
-impl EventSource for RxEventSource {
-    fn poll_event(&mut self) -> impl std::future::Future<Output = Option<Event>> + Send + '_ {
+impl MessageSource for RxMessageSource {
+    fn poll_event(&mut self) -> impl std::future::Future<Output = Option<RecvMessage>> + Send + '_ {
         self.rx.next()
     }
 }

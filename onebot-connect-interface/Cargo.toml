@@ -8,7 +8,7 @@ serde = { version = "1" }
 serde-value = {version = "0.7" }
 onebot-types = { path = "../../onebot-types" }
 thiserror = { version = "2" }
-futures = { version = "0.3", optional = true }
+futures = { version = "0.3", optional = true, default-features = false}
 
 [features]
 default = ["client"]

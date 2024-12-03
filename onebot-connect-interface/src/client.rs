@@ -14,12 +14,19 @@ mod recv {
 
     use super::*;
 
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum ClosedReason {
+        Ok,
+        Error(String),
+    }
+
     /// Messages received from OneBot Connect
     #[derive(Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
         Event(Event),
-        /// Response after closed
-        Closed(Result<(), String>),
+        /// Response after close command
+        /// Ok means closed successfully, Err means close failed
+        Close(Result<ClosedReason, String>),
     }
 
     /// Action args passed to OneBot Connect with command channel
@@ -36,18 +43,19 @@ mod recv {
         Close,
     }
 
-    /// Receiver for events from OneBot Connect
-    pub trait EventSource {
-        fn poll_event(&mut self) -> impl Future<Output = Option<Event>> + Send + '_;
+    /// Receiver for messages from OneBot Connect
+    pub trait MessageSource {
+        fn poll_event(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
     /// Trait to define the connection behavior for OneBot Connect
     pub trait Connect {
         type CErr: ErrTrait;
         type Client: Client;
-        type ESource: EventSource;
+        type Source: MessageSource;
 
-        fn connect(self) -> Result<(Self::ESource, Self::Client), Self::CErr>;
+        fn connect(self)
+            -> impl Future<Output = Result<(Self::Source, Self::Client), Self::CErr>>;
     }
 }
 
@@ -58,7 +66,7 @@ use serde_value::Value;
 /// OneBot application client, providing functions to interact with OneBot Connect
 pub trait Client {
     fn send_action_impl(
-        &mut self,
+        &self,
         action: ActionType,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Value, Error>> + Send + 'static;
@@ -68,7 +76,7 @@ pub trait Client {
 
 pub trait ClientDyn {
     fn send_action_dyn(
-        &mut self,
+        &self,
         action: ActionType,
         self_: Option<BotSelf>,
     ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>>;
@@ -78,7 +86,7 @@ pub trait ClientDyn {
 
 impl<T: Client> ClientDyn for T {
     fn send_action_dyn(
-        &mut self,
+        &self,
         action: ActionType,
         self_: Option<BotSelf>,
     ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> {
@@ -92,7 +100,7 @@ impl<T: Client> ClientDyn for T {
 
 pub trait ClientExt {
     fn send_action<E, A>(
-        &mut self,
+        &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<A::Resp, Error>>
@@ -103,7 +111,7 @@ pub trait ClientExt {
 
 impl<T: Client> ClientExt for T {
     fn send_action<E, A>(
-        &mut self,
+        &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<A::Resp, Error>>
@@ -122,7 +130,7 @@ impl<T: Client> ClientExt for T {
 
 impl ClientExt for dyn ClientDyn {
     fn send_action<E, T>(
-        &mut self,
+        &self,
         action: T,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<T::Resp, Error>>
