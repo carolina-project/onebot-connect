@@ -5,5 +5,10 @@ edition = "2021"
 
 [dependencies]
 onebot-connect-interface = { path = "../onebot-connect-interface", features = ["client_recv"]}
+async-tungstenite = { version = "^0.28", optional = true }
+futures = { version = "0.3" }
+onebot-types = { path = "../../onebot-types" }
 
 [features]
+default = []
+ws = ["async-tungstenite"]

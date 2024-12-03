@@ -3,18 +3,19 @@ use std::{error::Error as ErrTrait, future::Future, pin::Pin};
 use super::Error;
 use onebot_types::{
     base::OBAction,
-    ob12::{action::ActionType, event::Event, BotSelf},
+    ob12::{action::ActionType, BotSelf},
 };
 
 #[cfg(feature = "client_recv")]
 mod recv {
-    use futures::channel::{mpsc, oneshot};
+    use futures::channel::oneshot;
+    use onebot_types::ob12::event::Event;
     use serde::{Deserialize, Serialize};
 
     use super::*;
 
     /// Messages received from OneBot Connect
-    #[derive(Debug)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
         Event(Event),
         /// Response after closed
@@ -34,18 +35,19 @@ mod recv {
         Action(ActionArgs),
         Close,
     }
-    pub type MessageRecv = mpsc::Receiver<RecvMessage>;
 
-    pub trait Event {
-        
+    /// Receiver for events from OneBot Connect
+    pub trait EventSource {
+        fn poll_event(&mut self) -> impl Future<Output = Option<Event>> + Send + '_;
     }
 
     /// Trait to define the connection behavior for OneBot Connect
     pub trait Connect {
         type CErr: ErrTrait;
         type Client: Client;
+        type ESource: EventSource;
 
-        fn connect(self) -> Result<(MessageRecv, Self::Client), Self::CErr>;
+        fn connect(self) -> Result<(Self::ESource, Self::Client), Self::CErr>;
     }
 }
 

@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = { version = "*" }
-serde-value = {version = "*" }
+serde = { version = "1" }
+serde-value = {version = "0.7" }
 onebot-types = { path = "../../onebot-types" }
-thiserror = { version = "*" }
-futures = { version = "*", optional = true }
+thiserror = { version = "2" }
+futures = { version = "0.3", optional = true }
 
 [features]
 default = ["client"]
