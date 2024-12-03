@@ -6,13 +6,17 @@ edition = "2021"
 [dependencies]
 onebot-connect-interface = { path = "../onebot-connect-interface", features = ["client_recv"]}
 tokio-tungstenite = { version = "0.24", optional = true }
-futures = { version = "0.3" }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 onebot-types = { path = "../../onebot-types" }
 serde-value = {version = "0.7" }
 http = { version = "1", optional = true }
 thiserror = "2"
 futures-util = "0.3"
+log = "0.4"
+serde_json = "1"
+fxhash = "0.2"
+uuid =  { version = "1", features = ["fast-rng"] }
+rand = "0.8"
 
 [features]
 default = []

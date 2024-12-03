@@ -8,16 +8,20 @@ use onebot_types::{
 
 #[cfg(feature = "client_recv")]
 mod recv {
-    use futures::channel::oneshot;
     use onebot_types::ob12::event::Event;
     use serde::{Deserialize, Serialize};
+    use tokio::sync::oneshot;
 
     use super::*;
 
     #[derive(Debug, Serialize, Deserialize)]
     pub enum ClosedReason {
+        /// Closed successfully.
         Ok,
+        /// Closed, but some error occurred.
         Error(String),
+        /// Partially closed.
+        Partial(String),
     }
 
     /// Messages received from OneBot Connect
@@ -40,7 +44,7 @@ mod recv {
     /// Command enum to represent different commands that can be sent to OneBot Connect
     pub enum Command {
         Action(ActionArgs),
-        Close,
+        Close(oneshot::Sender<Result<ClosedReason, String>>),
     }
 
     /// Receiver for messages from OneBot Connect
@@ -54,8 +58,11 @@ mod recv {
         type Client: Client;
         type Source: MessageSource;
 
-        fn connect(self)
-            -> impl Future<Output = Result<(Self::Source, Self::Client), Self::CErr>>;
+        fn connect(
+            self,
+        ) -> impl Future<Output = Result<(impl Into<Self::Source>, impl Into<Self::Client>), Self::CErr>>;
+
+        fn with_authorization(self, access_token: impl AsRef<str>) -> Self;
     }
 }
 
@@ -69,9 +76,9 @@ pub trait Client {
         &self,
         action: ActionType,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Value, Error>> + Send + 'static;
+    ) -> impl Future<Output = Result<Value, Error>> + Send + '_;
 
-    fn close_impl(&mut self) -> impl Future<Output = Result<(), String>> + Send + 'static;
+    fn close_impl(&mut self) -> impl Future<Output = Result<(), String>> + Send + '_;
 }
 
 pub trait ClientDyn {
@@ -79,9 +86,9 @@ pub trait ClientDyn {
         &self,
         action: ActionType,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + '_>>;
 
-    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
 impl<T: Client> ClientDyn for T {
@@ -89,11 +96,11 @@ impl<T: Client> ClientDyn for T {
         &self,
         action: ActionType,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + '_>> {
         Box::pin(self.send_action_impl(action, self_))
     }
 
-    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(self.close_impl())
     }
 }
@@ -105,7 +112,7 @@ pub trait ClientExt {
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<A::Resp, Error>>
     where
-        E: std::error::Error + 'static,
+        E: std::error::Error + Send + 'static,
         A: OBAction + TryInto<ActionType, Error = E>;
 }
 
@@ -116,7 +123,7 @@ impl<T: Client> ClientExt for T {
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<A::Resp, Error>>
     where
-        E: std::error::Error + 'static,
+        E: std::error::Error + Send + 'static,
         A: OBAction + TryInto<ActionType, Error = E>,
     {
         async move {
@@ -135,7 +142,7 @@ impl ClientExt for dyn ClientDyn {
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<T::Resp, Error>>
     where
-        E: std::error::Error + 'static,
+        E: std::error::Error + Send + 'static,
         T: OBAction + TryInto<ActionType, Error = E>,
     {
         async move {

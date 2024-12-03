@@ -8,10 +8,10 @@ serde = { version = "1" }
 serde-value = {version = "0.7" }
 onebot-types = { path = "../../onebot-types" }
 thiserror = { version = "2" }
-futures = { version = "0.3", optional = true, default-features = false}
+tokio = { version = "1", optional = true, features = ["sync"]}
 
 [features]
 default = ["client"]
 server = []
 client = []
-client_recv = ["client", "futures"]
+client_recv = ["client", "tokio"]
