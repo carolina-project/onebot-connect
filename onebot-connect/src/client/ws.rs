@@ -70,7 +70,7 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         let mut req = self.req.into_client_request()?;
         if let Some(token) = self.access_token {
             req.headers_mut()
-                .insert("Authorization", HeaderValue::from_str(&token)?);
+                .insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
