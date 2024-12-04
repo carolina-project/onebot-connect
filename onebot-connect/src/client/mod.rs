@@ -80,10 +80,33 @@ impl Client for TxClient {
         rx.await.unwrap()
     }
 
-    async fn close_impl(&mut self) -> Result<(), String> {
+    async fn close_impl(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.tx.send(Command::Close(tx)).await.unwrap();
 
         rx.await.unwrap().map(|_| ())
+    }
+
+    async fn get_config<'a, 'b: 'a>(
+        &'a self,
+        key: impl AsRef<str> + Send + 'b,
+    ) -> Option<serde_value::Value> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::GetConfig(key.as_ref().to_owned(), tx))
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn set_config<'a, 'b: 'a>(
+        &'a self,
+        key: impl AsRef<str> + Send + 'b,
+        value: serde_value::Value,
+    ) -> Result<(), onebot_connect_interface::ConfigError> {
+        let (tx, rx) = oneshot::channel();
+        let entry = (key.as_ref().to_owned(), value);
+        self.tx.send(Command::SetConfig(entry, tx)).await.unwrap();
+        rx.await.unwrap()
     }
 }

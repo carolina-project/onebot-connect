@@ -1,5 +1,7 @@
 use std::{error::Error as ErrTrait, future::Future, pin::Pin};
 
+use crate::ConfigError;
+
 use super::Error;
 use onebot_types::{
     base::OBAction,
@@ -44,6 +46,8 @@ mod recv {
     /// Command enum to represent different commands that can be sent to OneBot Connect
     pub enum Command {
         Action(ActionArgs),
+        GetConfig(String, oneshot::Sender<Option<Value>>),
+        SetConfig((String, Value), oneshot::Sender<Result<(), ConfigError>>),
         Close(oneshot::Sender<Result<ClosedReason, String>>),
     }
 
@@ -78,7 +82,18 @@ pub trait Client {
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Value, Error>> + Send + '_;
 
-    fn close_impl(&mut self) -> impl Future<Output = Result<(), String>> + Send + '_;
+    fn close_impl(&self) -> impl Future<Output = Result<(), String>> + Send + '_;
+
+    fn get_config<'a, 'b: 'a>(
+        &'a self,
+        key: impl AsRef<str> + Send + 'b,
+    ) -> impl Future<Output = Option<Value>> + Send + '_;
+
+    fn set_config<'a, 'b: 'a>(
+        &'a self,
+        key: impl AsRef<str> + Send + 'b,
+        value: Value,
+    ) -> impl Future<Output = Result<(), ConfigError>> + Send + '_;
 }
 
 pub trait ClientDyn {
@@ -88,7 +103,15 @@ pub trait ClientDyn {
         self_: Option<BotSelf>,
     ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + '_>>;
 
-    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn close_dyn(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+
+    fn get_config<'a, 'b: 'a>(&'a self, key: &'b str) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + '_>>;
+
+    fn set_config<'a, 'b: 'a>(
+        &'a self,
+        key: &'b str,
+        value: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConfigError>> + Send + '_>>;
 }
 
 impl<T: Client> ClientDyn for T {
@@ -100,8 +123,23 @@ impl<T: Client> ClientDyn for T {
         Box::pin(self.send_action_impl(action, self_))
     }
 
-    fn close_dyn(&mut self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+    fn close_dyn(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(self.close_impl())
+    }
+
+    fn get_config<'a, 'b: 'a>(
+        &'a self,
+        key: &'b str,
+    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + '_>> {
+        Box::pin(self.get_config(key))
+    }
+
+    fn set_config<'a, 'b: 'a>(
+            &'a self,
+            key: &'b str,
+            value: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ConfigError>> + Send + '_>> {
+        Box::pin(self.set_config(key, value))
     }
 }
 

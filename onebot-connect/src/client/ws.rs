@@ -1,11 +1,16 @@
+use std::io;
+
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use http::{header::InvalidHeaderValue, HeaderValue};
+use http::{
+    header::{InvalidHeaderValue, AUTHORIZATION},
+    HeaderValue,
+};
 use onebot_connect_interface::{
     client::{ActionArgs, ClosedReason, Command, Connect, RecvMessage},
-    Error,
+    ConfigError, Error,
 };
 use onebot_types::ob12::{self, event::Event};
 use serde_json::Value as Json;
@@ -33,13 +38,15 @@ pub enum WsConnectError {
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error(transparent)]
     HeaderValue(#[from] InvalidHeaderValue),
+    #[error(transparent)]
+    Io(#[from] io::Error),
     #[error("ws closed")]
     ConnectionClosed,
     #[error("communication channel closed")]
     ChannelClosed,
 }
 
-/// OneBot WebSocket Connect Generator
+/// OneBot Connect Websocket Generator
 pub struct WSConnect<R>
 where
     R: IntoClientRequest + Unpin,
@@ -69,8 +76,10 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
     ) -> Result<(impl Into<Self::Source>, impl Into<Self::Client>), Self::CErr> {
         let mut req = self.req.into_client_request()?;
         if let Some(token) = self.access_token {
-            req.headers_mut()
-                .insert("Authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
+            req.headers_mut().insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}"))?,
+            );
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
@@ -96,13 +105,14 @@ enum RecvData {
 
 /// WebSocket connection task handle
 #[allow(unused)]
-pub struct WSTaskHandle {
+struct WSTaskHandle {
     recv_handle: JoinHandle<Result<(), WsConnectError>>,
     send_handle: JoinHandle<Result<(), WsConnectError>>,
     manage_handle: JoinHandle<Result<(), WsConnectError>>,
 }
 
-pub struct WSConnectionHandle {
+/// Wrapper for `RxMessageSource` and `TxClient`
+struct WSConnectionHandle {
     msg_rx: mpsc::Receiver<RecvMessage>,
     cmd_tx: mpsc::Sender<Command>,
 }
@@ -158,7 +168,7 @@ impl WSTaskHandle {
     async fn handle_action(
         args: ActionArgs,
         map: &mut ActionMap,
-        action_tx: mpsc::Sender<Vec<u8>>,
+        action_tx: &mpsc::Sender<Vec<u8>>,
     ) {
         let ActionArgs {
             action,
@@ -183,9 +193,10 @@ impl WSTaskHandle {
         }
     }
 
+    #[inline(always)]
     async fn handle_close(
-        signal_tx_send: mpsc::Sender<Signal>,
-        signal_tx_recv: mpsc::Sender<Signal>,
+        signal_tx_send: &mpsc::Sender<Signal>,
+        signal_tx_recv: &mpsc::Sender<Signal>,
         tx: oneshot::Sender<Result<ClosedReason, String>>,
     ) {
         let (close_tx_recv, close_rx_recv) = oneshot::channel();
@@ -207,11 +218,12 @@ impl WSTaskHandle {
                 "recv task error: {} \n send task error: {}",
                 recv_result.err().unwrap(),
                 send_result.err().unwrap()
-            ))).unwrap();
+            )))
+            .unwrap();
         } else {
             let mut err_str = String::new();
             if let Err(e) = recv_result {
-                err_str.push_str(&format!("recv task error: {}", e));
+                err_str.push_str(&format!("recv task error: {}\n", e));
             }
 
             if let Err(e) = send_result {
@@ -219,6 +231,26 @@ impl WSTaskHandle {
             }
 
             tx.send(Ok(ClosedReason::Partial(err_str))).unwrap();
+        }
+    }
+
+    #[inline(always)]
+    async fn handle_command(
+        command: Command,
+        action_map: &mut ActionMap,
+        action_tx: &mpsc::Sender<Vec<u8>>,
+        signal_tx_send: &mpsc::Sender<Signal>,
+        signal_tx_recv: &mpsc::Sender<Signal>,
+    ) {
+        match command {
+            Command::Action(args) => {
+                Self::handle_action(args, action_map, action_tx).await;
+            }
+            Command::Close(tx) => {
+                Self::handle_close(signal_tx_send, signal_tx_recv, tx).await;
+            }
+            Command::GetConfig(_, tx) => tx.send(None).unwrap(),
+            Command::SetConfig((key, _), tx) => tx.send(Err(ConfigError::UnknownKey(key))).unwrap(),
         }
     }
 
@@ -237,15 +269,13 @@ impl WSTaskHandle {
                     let Some(command) = command else {
                         break Err(WsConnectError::ChannelClosed)
                     };
-
-                    match command {
-                        Command::Action(args) => {
-                            Self::handle_action(args, &mut action_map, action_tx.clone()).await;
-                        },
-                        Command::Close(tx) => {
-                            Self::handle_close(signal_tx_send.clone(), signal_tx_recv.clone(), tx).await;
-                        },
-                    }
+                    Self::handle_command(
+                        command, 
+                        &mut action_map,
+                        &action_tx,
+                        &signal_tx_send,
+                        &signal_tx_recv
+                    ).await;
                 }
                 recv_data = recv_data_rx.recv() => {
                     let Some(data) = recv_data else {

@@ -15,6 +15,18 @@ pub enum Error {
     #[error(transparent)]
     Deserializer(#[from] DeserializerError),
     #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Other(Box<dyn ErrTrait + Send>),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("expected type `{0}`, found type `{1}`")]
+    TypeMismatch(String, String),
+    #[error("unknown config key `{0}`")]
+    UnknownKey(String),
+    #[error(transparent)]
     Other(Box<dyn ErrTrait + Send>),
 }
 
