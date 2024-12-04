@@ -47,4 +47,8 @@ impl Error {
     pub fn deserialize<E: serde::de::Error + Send + 'static>(e: E) -> Self {
         Self::Deserialize(Box::new(e))
     }
+
+    pub fn not_supported(msg: impl AsRef<str>) -> Self {
+        Self::NotSupported(msg.as_ref().into())
+    }
 }
