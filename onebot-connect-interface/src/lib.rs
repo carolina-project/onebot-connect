@@ -16,6 +16,8 @@ pub enum Error {
     Deserializer(#[from] DeserializerError),
     #[error(transparent)]
     Config(#[from] ConfigError),
+    #[error("not supported: {0}")]
+    NotSupported(String),
     #[error(transparent)]
     Other(Box<dyn ErrTrait + Send>),
 }

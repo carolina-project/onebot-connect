@@ -7,7 +7,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::{
     ws::{self, WSTaskHandle},
-    RxMessageSource, TxClient,
+    RxMessageSource, TxClientProvider,
 };
 
 pub type WebSocketConn = WebSocketStream<TcpStream>;
@@ -18,14 +18,14 @@ pub struct WSReConnect<A: ToSocketAddrs> {
 }
 
 impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
-    type Err = ws::WsConnectError;
+    type Error = ws::WsConnectError;
     type Message = SocketAddr;
     type Source = RxMessageSource;
-    type Client = TxClient;
+    type Provider = TxClientProvider;
 
     async fn connect(
         self,
-    ) -> Result<(Self::Source, Self::Client, Self::Message), Self::Err> {
+    ) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let listener = TcpListener::bind(self.addr).await?;
 
         let (stream, addr) = listener.accept().await?;
@@ -61,7 +61,7 @@ impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
 
         Ok((
             RxMessageSource::new(conn_handle.msg_rx),
-            TxClient::new(conn_handle.cmd_tx),
+            TxClientProvider::new(conn_handle.cmd_tx),
             addr
         ))
     }

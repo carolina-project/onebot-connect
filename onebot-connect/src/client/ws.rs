@@ -31,7 +31,7 @@ pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 use crate::client::generate_echo;
 
-use super::{ActionMap, RxMessageSource, TxClient};
+use super::{ActionMap, RxMessageSource, TxClientProvider};
 
 #[derive(Debug, Error)]
 pub enum WsConnectError {
@@ -66,14 +66,14 @@ impl<R: IntoClientRequest + Unpin> WSConnect<R> {
 }
 
 impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
-    type Err = WsConnectError;
+    type Error = WsConnectError;
     type Message = ();
-    type Client = TxClient;
+    type Provider = TxClientProvider;
     type Source = RxMessageSource;
 
     async fn connect(
         self,
-    ) -> Result<(Self::Source, Self::Client, Self::Message), Self::Err> {
+    ) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let mut req = self.req.into_client_request()?;
         if let Some(token) = self.access_token {
             req.headers_mut().insert(
@@ -83,7 +83,7 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
-        Ok((RxMessageSource::new(msg_rx), TxClient::new(cmd_tx), ()))
+        Ok((RxMessageSource::new(msg_rx), TxClientProvider::new(cmd_tx), ()))
     }
 
     fn with_authorization(self, access_token: impl AsRef<str>) -> Self {

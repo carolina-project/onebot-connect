@@ -1,7 +1,7 @@
 use fxhash::FxHashMap;
 use onebot_connect_interface::{
-    client::{ActionArgs, Client, Command, MessageSource, RecvMessage},
-    ActionResult,
+    client::{ActionArgs, Client, ClientProvider, Command, MessageSource, RecvMessage},
+    ActionResult, Error as OCError,
 };
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
@@ -52,22 +52,36 @@ impl MessageSource for RxMessageSource {
     }
 }
 
+pub struct TxClientProvider {
+    tx: mpsc::Sender<Command>,
+}
+impl TxClientProvider {
+    pub fn new(tx: mpsc::Sender<Command>) -> Self {
+        Self { tx }
+    }
+}
+impl ClientProvider for TxClientProvider {
+    type Output = TxClient;
+
+    fn provide(&self) -> Result<Self::Output, OCError> {
+        Ok(TxClient::new(self.tx.clone()))
+    }
+}
+
 pub struct TxClient {
     tx: mpsc::Sender<Command>,
 }
-
 impl TxClient {
     pub fn new(tx: mpsc::Sender<Command>) -> Self {
         Self { tx }
     }
 }
-
 impl Client for TxClient {
     async fn send_action_impl(
         &self,
         action: onebot_types::ob12::action::ActionType,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<serde_value::Value, onebot_connect_interface::Error> {
+    ) -> Result<Option<serde_value::Value>, onebot_connect_interface::Error> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::Action(ActionArgs {
@@ -77,14 +91,7 @@ impl Client for TxClient {
             }))
             .await
             .unwrap();
-        rx.await.unwrap()
-    }
-
-    async fn close_impl(&self) -> Result<(), String> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(Command::Close(tx)).await.unwrap();
-
-        rx.await.unwrap().map(|_| ())
+        rx.await.unwrap().map(|r| Some(r))
     }
 
     async fn get_config<'a, 'b: 'a>(
@@ -96,6 +103,7 @@ impl Client for TxClient {
             .send(Command::GetConfig(key.as_ref().to_owned(), tx))
             .await
             .unwrap();
+
         rx.await.unwrap()
     }
 
