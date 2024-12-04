@@ -16,6 +16,7 @@ use onebot_types::ob12::{self, event::Event};
 use serde_json::Value as Json;
 use thiserror::Error;
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -65,15 +66,14 @@ impl<R: IntoClientRequest + Unpin> WSConnect<R> {
 }
 
 impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
-    type CErr = WsConnectError;
-
+    type Err = WsConnectError;
+    type Message = ();
     type Client = TxClient;
-
     type Source = RxMessageSource;
 
     async fn connect(
         self,
-    ) -> Result<(impl Into<Self::Source>, impl Into<Self::Client>), Self::CErr> {
+    ) -> Result<(Self::Source, Self::Client, Self::Message), Self::Err> {
         let mut req = self.req.into_client_request()?;
         if let Some(token) = self.access_token {
             req.headers_mut().insert(
@@ -83,13 +83,13 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
-        Ok((RxMessageSource::new(msg_rx), TxClient::new(cmd_tx)))
+        Ok((RxMessageSource::new(msg_rx), TxClient::new(cmd_tx), ()))
     }
 
     fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
         Self {
-            req: self.req,
             access_token: Some(access_token.as_ref().to_owned()),
+            ..self
         }
     }
 }
@@ -105,16 +105,16 @@ enum RecvData {
 
 /// WebSocket connection task handle
 #[allow(unused)]
-struct WSTaskHandle {
-    recv_handle: JoinHandle<Result<(), WsConnectError>>,
-    send_handle: JoinHandle<Result<(), WsConnectError>>,
-    manage_handle: JoinHandle<Result<(), WsConnectError>>,
+pub(crate) struct WSTaskHandle {
+    pub recv_handle: JoinHandle<Result<(), WsConnectError>>,
+    pub send_handle: JoinHandle<Result<(), WsConnectError>>,
+    pub manage_handle: JoinHandle<Result<(), WsConnectError>>,
 }
 
 /// Wrapper for `RxMessageSource` and `TxClient`
-struct WSConnectionHandle {
-    msg_rx: mpsc::Receiver<RecvMessage>,
-    cmd_tx: mpsc::Sender<Command>,
+pub(crate) struct WSConnectionHandle {
+    pub msg_rx: mpsc::Receiver<RecvMessage>,
+    pub cmd_tx: mpsc::Sender<Command>,
 }
 
 #[derive(Error, Debug)]
@@ -131,8 +131,14 @@ impl RecvError {
     }
 }
 
+pub(crate) trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+
 impl WSTaskHandle {
-    pub fn create(ws: WebSocketConn) -> (Self, WSConnectionHandle) {
+    pub(crate) fn create<T>(ws: WebSocketStream<T>) -> (Self, WSConnectionHandle)
+    where
+        T: WsStream,
+    {
         let (msg_tx, msg_rx) = mpsc::channel(8);
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
 
@@ -270,7 +276,7 @@ impl WSTaskHandle {
                         break Err(WsConnectError::ChannelClosed)
                     };
                     Self::handle_command(
-                        command, 
+                        command,
                         &mut action_map,
                         &action_tx,
                         &signal_tx_send,
@@ -301,11 +307,14 @@ impl WSTaskHandle {
         }
     }
 
-    async fn send_task(
-        mut stream: SplitSink<WebSocketConn, tokio_tungstenite::tungstenite::Message>,
+    async fn send_task<T>(
+        mut stream: SplitSink<WebSocketStream<T>, tokio_tungstenite::tungstenite::Message>,
         mut action_rx: mpsc::Receiver<Vec<u8>>,
         mut signal_rx: mpsc::Receiver<Signal>,
-    ) -> Result<(), WsConnectError> {
+    ) -> Result<(), WsConnectError>
+    where
+        T: WsStream,
+    {
         loop {
             tokio::select! {
                 action = action_rx.recv() => {
@@ -351,11 +360,14 @@ impl WSTaskHandle {
         }
     }
 
-    async fn recv_task(
-        mut stream: SplitStream<WebSocketConn>,
+    async fn recv_task<T>(
+        mut stream: SplitStream<WebSocketStream<T>>,
         data_tx: mpsc::Sender<RecvData>,
         mut signal_rx: mpsc::Receiver<Signal>,
-    ) -> Result<(), WsConnectError> {
+    ) -> Result<(), WsConnectError>
+    where
+        T: WsStream,
+    {
         loop {
             tokio::select! {
                 data = stream.next() => {

@@ -10,6 +10,8 @@ use onebot_types::{
 
 #[cfg(feature = "client_recv")]
 mod recv {
+    use std::fmt::Debug;
+
     use onebot_types::ob12::event::Event;
     use serde::{Deserialize, Serialize};
     use tokio::sync::oneshot;
@@ -58,13 +60,17 @@ mod recv {
 
     /// Trait to define the connection behavior for OneBot Connect
     pub trait Connect {
-        type CErr: ErrTrait;
+        /// Connection error type
+        type Err: ErrTrait;
+        /// Message after connection established successfully.
+        type Message: Debug;
+        /// Client for applcation to call.
         type Client: Client;
         type Source: MessageSource;
 
         fn connect(
             self,
-        ) -> impl Future<Output = Result<(impl Into<Self::Source>, impl Into<Self::Client>), Self::CErr>>;
+        ) -> impl Future<Output = Result<(Self::Source, Self::Client, Self::Message), Self::Err>>;
 
         fn with_authorization(self, access_token: impl AsRef<str>) -> Self;
     }
