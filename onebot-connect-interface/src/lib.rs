@@ -1,5 +1,4 @@
 use onebot_types::ob12::action::RespError;
-use serde_value::DeserializerError;
 use std::error::Error as ErrTrait;
 
 #[cfg(feature = "server")]
@@ -12,8 +11,10 @@ pub mod client;
 pub enum Error {
     #[error(transparent)]
     Resp(#[from] RespError),
-    #[error(transparent)]
-    Deserializer(#[from] DeserializerError),
+    #[error("serialize error: {0}")]
+    Serialize(Box<dyn ErrTrait + Send>),
+    #[error("deserialize error: {0}")]
+    Deserialize(Box<dyn ErrTrait + Send>),
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error("not supported: {0}")]
@@ -37,5 +38,13 @@ pub type ActionResult<T> = Result<T, Error>;
 impl Error {
     pub fn other<T: ErrTrait + Send + 'static>(err: T) -> Self {
         Self::Other(Box::new(err))
+    }
+
+    pub fn serialize<E: serde::ser::Error + Send + 'static>(e: E) -> Self {
+        Self::Serialize(Box::new(e))
+    }
+
+    pub fn deserialize<E: serde::de::Error + Send + 'static>(e: E) -> Self {
+        Self::Deserialize(Box::new(e))
     }
 }

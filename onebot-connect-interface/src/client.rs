@@ -5,7 +5,11 @@ use crate::ConfigError;
 use super::Error;
 use onebot_types::{
     base::OBAction,
-    ob12::{action::ActionType, BotSelf},
+    ob12::{
+        action::{ActionType, GetLatestEvents},
+        event::Event,
+        BotSelf,
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,7 +34,7 @@ mod recv {
     /// Messages received from connection
     #[derive(Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
-        Event(Event),
+        Event(Vec<Event>),
         /// Response after close command
         /// Ok means closed successfully, Err means close failed
         Close(Result<ClosedReason, String>),
@@ -54,14 +58,14 @@ mod recv {
 
     /// Receiver for messages from OneBot Connect
     pub trait MessageSource {
-        fn poll_event(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
+        fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
     pub trait ClientProvider {
         type Output: Client;
 
         /// Provides a client instance.
-        fn provide(&self) -> Result<Self::Output, Error>;
+        fn provide(&mut self) -> Result<Self::Output, Error>;
     }
 
     /// Trait to define the connection behavior
@@ -165,7 +169,7 @@ impl<T: Client> ClientDyn for T {
     fn get_config<'a, 'b: 'a>(
         &'a self,
         key: &'b str,
-    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>> {
         Box::pin(self.get_config(key))
     }
 
@@ -190,41 +194,72 @@ impl<T: Client> ClientDyn for T {
     }
 }
 
+#[inline]
+fn process_resp<R>(resp: Option<R>) -> Result<R, Error> {
+    match resp {
+        Some(res) => Ok(res),
+        None => Err(Error::NotSupported("action response not supported".into())),
+    }
+}
+
 /// Extension trait for `Client` to provide additional functionalities
 pub trait ClientExt {
     fn send_action<E, A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<A::Resp>, Error>>
+    ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
     where
         E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E>;
+        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static;
+
+    fn get_latest_events<'a>(
+        &'a self,
+        limit: i64,
+        timeout: i64,
+        self_: Option<BotSelf>,
+    ) -> impl std::future::Future<Output = Result<Vec<Event>, Error>> + Send + 'a
+    where
+        Self: Sync,
+    {
+        async move {
+            let action = GetLatestEvents {
+                limit,
+                timeout,
+                extra: Default::default(),
+            };
+
+            let response = self.send_action(action, self_).await?;
+            process_resp(response)
+        }
+    }
 }
 
-impl<T: Client> ClientExt for T {
+impl<T: Client + Sync> ClientExt for T {
     fn send_action<E, A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<A::Resp>, Error>>
+    ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
     where
         E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E>,
+        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
     {
         async move {
             let resp = self
                 .send_action_impl(action.try_into().map_err(Error::other)?, self_)
                 .await?;
             Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
+                Some(resp) => {
+                    Some(<A::Resp as Deserialize>::deserialize(resp).map_err(Error::deserialize)?)
+                }
                 None => None,
             })
         }
     }
 }
 
-impl ClientExt for dyn ClientDyn {
+impl ClientExt for dyn ClientDyn + Sync {
     fn send_action<E, A>(
         &self,
         action: A,
@@ -232,14 +267,16 @@ impl ClientExt for dyn ClientDyn {
     ) -> impl Future<Output = Result<Option<A::Resp>, Error>>
     where
         E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E>,
+        A: OBAction + TryInto<ActionType, Error = E> + 'static,
     {
         async move {
             let resp = self
                 .send_action_dyn(action.try_into().map_err(Error::other)?, self_)
                 .await?;
             Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
+                Some(resp) => {
+                    Some(<A::Resp as Deserialize>::deserialize(resp).map_err(Error::deserialize)?)
+                }
                 None => None,
             })
         }

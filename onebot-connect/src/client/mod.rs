@@ -47,7 +47,7 @@ impl RxMessageSource {
 }
 
 impl MessageSource for RxMessageSource {
-    fn poll_event(&mut self) -> impl std::future::Future<Output = Option<RecvMessage>> + Send + '_ {
+    fn poll_message(&mut self) -> impl std::future::Future<Output = Option<RecvMessage>> + Send + '_ {
         self.rx.recv()
     }
 }
@@ -63,7 +63,7 @@ impl TxClientProvider {
 impl ClientProvider for TxClientProvider {
     type Output = TxClient;
 
-    fn provide(&self) -> Result<Self::Output, OCError> {
+    fn provide(&mut self) -> Result<Self::Output, OCError> {
         Ok(TxClient::new(self.tx.clone()))
     }
 }

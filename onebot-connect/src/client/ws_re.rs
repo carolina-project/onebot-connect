@@ -6,7 +6,7 @@ use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_tungstenite::WebSocketStream;
 
 use super::{
-    ws::{self, WSTaskHandle},
+    ws::WSTaskHandle,
     RxMessageSource, TxClientProvider,
 };
 
@@ -18,7 +18,7 @@ pub struct WSReConnect<A: ToSocketAddrs> {
 }
 
 impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
-    type Error = ws::WsConnectError;
+    type Error = crate::Error;
     type Message = SocketAddr;
     type Source = RxMessageSource;
     type Provider = TxClientProvider;

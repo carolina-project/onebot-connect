@@ -1,20 +1,14 @@
-use std::io;
-
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use http::{
-    header::{InvalidHeaderValue, AUTHORIZATION},
-    HeaderValue,
-};
+use http::{header::AUTHORIZATION, HeaderValue};
 use onebot_connect_interface::{
     client::{ActionArgs, ClosedReason, Command, Connect, RecvMessage},
-    ConfigError, Error,
+    ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{self, event::Event};
 use serde_json::Value as Json;
-use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -32,20 +26,6 @@ pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 use crate::client::generate_echo;
 
 use super::{ActionMap, RxMessageSource, TxClientProvider};
-
-#[derive(Debug, Error)]
-pub enum WsConnectError {
-    #[error(transparent)]
-    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
-    #[error(transparent)]
-    HeaderValue(#[from] InvalidHeaderValue),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error("ws closed")]
-    ConnectionClosed,
-    #[error("communication channel closed")]
-    ChannelClosed,
-}
 
 /// OneBot Connect Websocket Generator
 pub struct WSConnect<R>
@@ -66,14 +46,12 @@ impl<R: IntoClientRequest + Unpin> WSConnect<R> {
 }
 
 impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
-    type Error = WsConnectError;
+    type Error = crate::Error;
     type Message = ();
     type Provider = TxClientProvider;
     type Source = RxMessageSource;
 
-    async fn connect(
-        self,
-    ) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
+    async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let mut req = self.req.into_client_request()?;
         if let Some(token) = self.access_token {
             req.headers_mut().insert(
@@ -83,7 +61,11 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
-        Ok((RxMessageSource::new(msg_rx), TxClientProvider::new(cmd_tx), ()))
+        Ok((
+            RxMessageSource::new(msg_rx),
+            TxClientProvider::new(cmd_tx),
+            (),
+        ))
     }
 
     fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
@@ -106,9 +88,9 @@ enum RecvData {
 /// WebSocket connection task handle
 #[allow(unused)]
 pub(crate) struct WSTaskHandle {
-    pub recv_handle: JoinHandle<Result<(), WsConnectError>>,
-    pub send_handle: JoinHandle<Result<(), WsConnectError>>,
-    pub manage_handle: JoinHandle<Result<(), WsConnectError>>,
+    pub recv_handle: JoinHandle<Result<(), crate::Error>>,
+    pub send_handle: JoinHandle<Result<(), crate::Error>>,
+    pub manage_handle: JoinHandle<Result<(), crate::Error>>,
 }
 
 /// Wrapper for `RxMessageSource` and `TxClient`
@@ -117,7 +99,7 @@ pub(crate) struct WSConnectionHandle {
     pub cmd_tx: mpsc::Sender<Command>,
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum RecvError {
     #[error(transparent)]
     SerdeJson(#[from] serde_json::Error),
@@ -194,7 +176,7 @@ impl WSTaskHandle {
                 action_tx.send(data).await.unwrap();
             }
             Err(e) => {
-                resp_tx.send(Err(Error::other(e))).unwrap();
+                resp_tx.send(Err(OCError::other(e))).unwrap();
             }
         }
     }
@@ -267,13 +249,13 @@ impl WSTaskHandle {
         signal_tx_send: mpsc::Sender<Signal>,
         mut recv_data_rx: mpsc::Receiver<RecvData>,
         action_tx: mpsc::Sender<Vec<u8>>,
-    ) -> Result<(), WsConnectError> {
+    ) -> Result<(), crate::Error> {
         let mut action_map = ActionMap::default();
         loop {
             tokio::select! {
                 command = cmd_rx.recv() => {
                     let Some(command) = command else {
-                        break Err(WsConnectError::ChannelClosed)
+                        break Err(crate::Error::ChannelClosed)
                     };
                     Self::handle_command(
                         command,
@@ -285,19 +267,19 @@ impl WSTaskHandle {
                 }
                 recv_data = recv_data_rx.recv() => {
                     let Some(data) = recv_data else {
-                        break Err(WsConnectError::ChannelClosed)
+                        break Err(crate::Error::ChannelClosed)
                     };
 
                     match data {
                         RecvData::Event(event) => {
-                            msg_tx.send(RecvMessage::Event(event)).await.unwrap()
+                            msg_tx.send(RecvMessage::Event(vec![event])).await.unwrap()
                         },
                         RecvData::Response((resp, echo)) => {
                             if let Some(resp_tx) = action_map.remove(&echo) {
                                 if resp.is_success() {
                                     resp_tx.send(Ok(resp.data)).unwrap();
                                 } else {
-                                    resp_tx.send(Err(Error::Resp(resp.into()))).unwrap();
+                                    resp_tx.send(Err(OCError::Resp(resp.into()))).unwrap();
                                 }
                             }
                         },
@@ -311,7 +293,7 @@ impl WSTaskHandle {
         mut stream: SplitSink<WebSocketStream<T>, tokio_tungstenite::tungstenite::Message>,
         mut action_rx: mpsc::Receiver<Vec<u8>>,
         mut signal_rx: mpsc::Receiver<Signal>,
-    ) -> Result<(), WsConnectError>
+    ) -> Result<(), crate::Error>
     where
         T: WsStream,
     {
@@ -319,7 +301,7 @@ impl WSTaskHandle {
             tokio::select! {
                 action = action_rx.recv() => {
                     let Some(action) = action else {
-                        break Err(WsConnectError::ChannelClosed)
+                        break Err(crate::Error::ChannelClosed)
                     };
 
                     match stream.send(
@@ -327,7 +309,7 @@ impl WSTaskHandle {
                     ).await {
                         Ok(_) => {},
                         Err(WsError::ConnectionClosed) => {
-                            break Err(WsConnectError::ConnectionClosed)
+                            break Err(crate::Error::ConnectionClosed)
                         },
                         Err(e) => {
                             log::error!("ws error: {}", e)
@@ -364,7 +346,7 @@ impl WSTaskHandle {
         mut stream: SplitStream<WebSocketStream<T>>,
         data_tx: mpsc::Sender<RecvData>,
         mut signal_rx: mpsc::Receiver<Signal>,
-    ) -> Result<(), WsConnectError>
+    ) -> Result<(), crate::Error>
     where
         T: WsStream,
     {
@@ -372,7 +354,7 @@ impl WSTaskHandle {
             tokio::select! {
                 data = stream.next() => {
                     let Some(data) = data else {
-                        break Err(WsConnectError::ConnectionClosed)
+                        break Err(crate::Error::ConnectionClosed)
                     };
 
                     match data {
