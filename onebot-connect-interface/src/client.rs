@@ -116,17 +116,23 @@ pub trait Client {
     ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
 
     /// Get config from connection's client.
+    #[allow(unused)]
     fn get_config<'a, 'b: 'a>(
         &'a self,
         key: impl AsRef<str> + Send + 'b,
-    ) -> impl Future<Output = Option<Value>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_ {
+        async { Ok(None) }
+    }
 
     /// Sets a configuration value in the connection.
+    #[allow(unused)]
     fn set_config<'a, 'b: 'a>(
         &'a self,
         key: impl AsRef<str> + Send + 'b,
         value: Value,
-    ) -> impl Future<Output = Result<(), ConfigError>> + Send + '_;
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        async move { Err(ConfigError::UnknownKey(key.as_ref().into()).into()) }
+    }
 
     /// Client releasing logic, such as sending actions stored.
     fn release(self) -> impl Future<Output = Result<(), Error>> + Send + 'static
@@ -152,13 +158,13 @@ pub trait ClientDyn {
     fn get_config<'a, 'b: 'a>(
         &'a self,
         key: &'b str,
-    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
 
     fn set_config<'a, 'b: 'a>(
         &'a self,
         key: &'b str,
         value: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ConfigError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 
     fn release(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
     where
@@ -176,17 +182,18 @@ impl<T: Client> ClientDyn for T {
     fn get_config<'a, 'b: 'a>(
         &'a self,
         key: &'b str,
-    ) -> Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
         Box::pin(self.get_config(key))
     }
 
     fn set_config<'a, 'b: 'a>(
-        &'a self,
-        key: &'b str,
-        value: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ConfigError>> + Send + '_>> {
+            &'a self,
+            key: &'b str,
+            value: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
         Box::pin(self.set_config(key, value))
     }
+
 
     fn send_action_dyn(
         &self,

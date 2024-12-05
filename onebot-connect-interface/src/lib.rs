@@ -19,6 +19,8 @@ pub enum Error {
     Config(#[from] ConfigError),
     #[error("not supported: {0}")]
     NotSupported(String),
+    #[error("closed: {0}")]
+    Closed(Box<dyn ErrTrait + Send>),
     #[error(transparent)]
     Other(Box<dyn ErrTrait + Send>),
 }
@@ -50,5 +52,9 @@ impl Error {
 
     pub fn not_supported(msg: impl AsRef<str>) -> Self {
         Self::NotSupported(msg.as_ref().into())
+    }
+
+    pub fn closed<E: ErrTrait + Send + 'static>(e: E) -> Self {
+        Self::Closed(Box::new(e))
     }
 }

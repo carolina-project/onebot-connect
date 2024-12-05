@@ -4,7 +4,7 @@ use futures_util::{
 };
 use http::{header::AUTHORIZATION, HeaderValue};
 use onebot_connect_interface::{
-    client::{ActionArgs, ClosedReason, Command, Connect, RecvMessage},
+    client::{ActionArgs, ActionResponder, ClosedReason, Command, Connect, RecvMessage},
     ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{self, event::Event};
@@ -157,11 +157,11 @@ impl WSTaskHandle {
         args: ActionArgs,
         map: &mut ActionMap,
         action_tx: &mpsc::Sender<Vec<u8>>,
+        responder: ActionResponder,
     ) {
         let ActionArgs {
             action,
             self_,
-            resp_tx,
         } = args;
         let echo = generate_echo(8, &map);
 
@@ -172,11 +172,11 @@ impl WSTaskHandle {
         });
         match res {
             Ok(data) => {
-                map.insert(echo, resp_tx);
+                map.insert(echo, responder);
                 action_tx.send(data).await.unwrap();
             }
             Err(e) => {
-                resp_tx.send(Err(OCError::other(e))).unwrap();
+                responder.send(Err(OCError::other(e))).unwrap();
             }
         }
     }
@@ -231,14 +231,15 @@ impl WSTaskHandle {
         signal_tx_recv: &mpsc::Sender<Signal>,
     ) {
         match command {
-            Command::Action(args) => {
-                Self::handle_action(args, action_map, action_tx).await;
+            Command::Action(args, responder) => {
+                Self::handle_action(args, action_map, action_tx, responder).await;
             }
             Command::Close(tx) => {
                 Self::handle_close(signal_tx_send, signal_tx_recv, tx).await;
             }
             Command::GetConfig(_, tx) => tx.send(None).unwrap(),
             Command::SetConfig((key, _), tx) => tx.send(Err(ConfigError::UnknownKey(key))).unwrap(),
+            Command::Respond(_, _) => log::error!("command not supported: respond"),
         }
     }
 
@@ -272,7 +273,7 @@ impl WSTaskHandle {
 
                     match data {
                         RecvData::Event(event) => {
-                            msg_tx.send(RecvMessage::Event(vec![event])).await.unwrap()
+                            msg_tx.send(RecvMessage::Event(event)).await.unwrap()
                         },
                         RecvData::Response((resp, echo)) => {
                             if let Some(resp_tx) = action_map.remove(&echo) {

@@ -47,7 +47,9 @@ impl RxMessageSource {
 }
 
 impl MessageSource for RxMessageSource {
-    fn poll_message(&mut self) -> impl std::future::Future<Output = Option<RecvMessage>> + Send + '_ {
+    fn poll_message(
+        &mut self,
+    ) -> impl std::future::Future<Output = Option<RecvMessage>> + Send + '_ {
         self.rx.recv()
     }
 }
@@ -81,40 +83,36 @@ impl Client for TxClient {
         &self,
         action: onebot_types::ob12::action::ActionType,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, onebot_connect_interface::Error> {
+    ) -> Result<Option<serde_value::Value>, OCError> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::Action(ActionArgs {
-                action,
-                self_,
-                resp_tx: tx,
-            }))
+            .send(Command::Action(ActionArgs { action, self_ }, tx))
             .await
-            .unwrap();
+            .map_err(OCError::closed)?;
         rx.await.unwrap().map(|r| Some(r))
     }
 
     async fn get_config<'a, 'b: 'a>(
         &'a self,
         key: impl AsRef<str> + Send + 'b,
-    ) -> Option<serde_value::Value> {
+    ) -> Result<Option<serde_value::Value>, OCError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::GetConfig(key.as_ref().to_owned(), tx))
             .await
-            .unwrap();
+            .map_err(OCError::closed)?;
 
-        rx.await.unwrap()
+        rx.await.map_err(OCError::closed)
     }
 
     async fn set_config<'a, 'b: 'a>(
         &'a self,
         key: impl AsRef<str> + Send + 'b,
         value: serde_value::Value,
-    ) -> Result<(), onebot_connect_interface::ConfigError> {
+    ) -> Result<(), OCError> {
         let (tx, rx) = oneshot::channel();
         let entry = (key.as_ref().to_owned(), value);
         self.tx.send(Command::SetConfig(entry, tx)).await.unwrap();
-        rx.await.unwrap()
+        Ok(rx.await.map_err(OCError::closed)??)
     }
 }

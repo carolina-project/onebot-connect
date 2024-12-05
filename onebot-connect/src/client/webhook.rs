@@ -1,15 +1,14 @@
 use super::*;
 use bytes::Bytes;
-use http_body_util::{BodyDataStream, BodyExt, Full};
-use hyper::{body::Incoming as IncomingBody, header::AUTHORIZATION, service::Service, StatusCode};
+use hyper::{header::AUTHORIZATION, service::Service, StatusCode};
 extern crate http as http_lib;
 
-use onebot_connect_interface::ConfigError;
+use onebot_connect_interface::{client::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::Mutex;
 use std::{future::Future, pin::Pin, sync::Arc};
 
-type ActionsTx = oneshot::Sender<Option<Vec<Action>>>;
+type ActionsTx = oneshot::Sender<Vec<Action>>;
 type ActionsRx = oneshot::Receiver<Vec<Action>>;
 type Response = hyper::Response<Option<Bytes>>;
 
@@ -48,6 +47,7 @@ impl Service<Req> for WebhookServer {
         Box::pin(async move {
             let req = hyper::Request::from(req);
 
+            // check access token
             let mut passed = false;
             if let Some((header_token, query_token)) = access_token.as_ref() {
                 if let Some(header) = req.headers().get(AUTHORIZATION) {
@@ -70,15 +70,19 @@ impl Service<Req> for WebhookServer {
                 return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
             }
 
+            // parse event
             let event: Event = serde_json::from_slice(&req.into_body()).map_err(|e| {
                 mk_resp(
                     StatusCode::BAD_REQUEST,
                     Some(format!("invalid data: {}", e)),
                 )
             })?;
+
             let (tx, rx) = oneshot::channel();
             event_tx.send((event, tx)).await.unwrap();
-            if let Some(actions) = rx.await.unwrap() {
+            // acquire response
+            let actions = rx.await.unwrap();
+            if actions.len() > 0 {
                 let json = serde_json::to_vec(&actions).map_err(|e| {
                     mk_resp(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -90,6 +94,30 @@ impl Service<Req> for WebhookServer {
                 Ok(mk_resp(StatusCode::NO_CONTENT, None::<Bytes>))
             }
         })
+    }
+}
+
+pub struct WebhookConnect {
+    access_token: Option<String>,
+}
+impl WebhookConnect {
+    pub fn new() {}
+}
+impl Connect for WebhookConnect {
+    type Error = crate::Error;
+
+    type Message = ();
+
+    type Provider = WebhookClientProvider;
+
+    type Source = RxMessageSource;
+
+    async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
+        todo!()
+    }
+
+    fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
+        todo!()
     }
 }
 
@@ -123,21 +151,6 @@ impl Client for WebhookClient {
         Ok(None)
     }
 
-    async fn get_config<'a, 'b: 'a>(
-        &'a self,
-        _: impl AsRef<str> + Send + 'b,
-    ) -> Option<serde_value::Value> {
-        None
-    }
-
-    async fn set_config<'a, 'b: 'a>(
-        &'a self,
-        key: impl AsRef<str> + Send + 'b,
-        _: serde_value::Value,
-    ) -> Result<(), ConfigError> {
-        Err(ConfigError::UnknownKey(key.as_ref().into()))
-    }
-
     async fn release(self) -> Result<(), OCError>
     where
         Self: Sized,
@@ -153,6 +166,10 @@ pub struct WebhookClientProvider {
     action_tx: Option<ActionsTx>,
 }
 impl WebhookClientProvider {
+    pub fn new() -> Self {
+        Self { action_tx: None }
+    }
+
     pub fn set_sender(&mut self, sender: ActionsTx) {
         self.action_tx = Some(sender);
     }

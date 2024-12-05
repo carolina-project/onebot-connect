@@ -1,11 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use ::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
-use onebot_connect_interface::{
-    client::{ClientExt, Connect},
-    ConfigError,
+use onebot_connect_interface::client::{ClientExt, Connect};
+use onebot_types::ob12::{
+    action::{Action, RespData, RespError},
+    event::Event,
 };
-use onebot_types::ob12::action::{Action, RespData, RespError};
 use serde_value::Value;
 
 use super::*;
@@ -14,39 +14,51 @@ pub struct HttpMessageSource {
     client: HttpClient,
     timeout: i64,
     limit: i64,
-    interval: f64,
+    interval_ms: u64,
+    events: VecDeque<Event>,
 }
 
 impl HttpMessageSource {
     pub fn new(client: HttpClient) -> Self {
-        Self::with_setting(client, 0, 0, 0.5)
+        Self::with_setting(client, 0, 0, 500)
     }
 
-    pub fn with_setting(client: HttpClient, timeout: i64, limit: i64, interval: f64) -> Self {
+    pub fn with_setting(client: HttpClient, timeout: i64, limit: i64, interval_ms: u64) -> Self {
         Self {
             client,
             timeout,
             limit,
-            interval,
+            interval_ms,
+            events: VecDeque::new(),
         }
     }
 }
 
 impl MessageSource for HttpMessageSource {
     async fn poll_message(&mut self) -> Option<RecvMessage> {
+        if let Some(event) = self.events.pop_front() {
+            return Some(RecvMessage::Event(event));
+        }
+
         loop {
             match self
                 .client
                 .get_latest_events(self.limit, self.timeout, None)
                 .await
             {
-                Ok(resp) => return Some(RecvMessage::Event(resp)),
+                Ok(mut resp) => {
+                    if resp.len() > 0 {
+                        let first = resp.remove(0);
+                        self.events.extend(resp);
+                        return Some(RecvMessage::Event(first));
+                    }
+                }
                 Err(e) => {
                     log::error!("error while polling events: {}", e);
                 }
             }
 
-            tokio::time::sleep(Duration::from_secs_f64(self.interval)).await;
+            tokio::time::sleep(Duration::from_millis(self.interval_ms)).await;
         }
     }
 }
@@ -94,21 +106,6 @@ impl Client for HttpClient {
                 Err(OCError::Resp(response.into()))
             }
         }
-    }
-
-    async fn get_config<'a, 'b: 'a>(
-        &'a self,
-        _key: impl AsRef<str> + Send + 'b,
-    ) -> Option<serde_value::Value> {
-        None
-    }
-
-    async fn set_config<'a, 'b: 'a>(
-        &'a self,
-        key: impl AsRef<str> + Send + 'b,
-        _value: serde_value::Value,
-    ) -> Result<(), onebot_connect_interface::ConfigError> {
-        Err(ConfigError::UnknownKey(key.as_ref().into()))
     }
 }
 
