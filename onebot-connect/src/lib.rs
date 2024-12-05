@@ -3,6 +3,8 @@ use std::io;
 #[cfg(feature = "client")]
 pub mod client;
 
+use std::error::Error as ErrTrait;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -15,11 +17,17 @@ pub enum Error {
     #[error("ws closed")]
     ConnectionClosed,
     #[error("communication channel closed")]
-    ChannelClosed,
+    ChannelClosed(Box<dyn ErrTrait + Send>),
     #[cfg(feature = "ws")]
     #[error(transparent)]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[cfg(feature = "http")]
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
+}
+
+impl Error {
+    pub fn channel_closed<E: ErrTrait + Send + 'static>(e: E) -> Self {
+        Self::ChannelClosed(Box::new(e))
+    }
 }

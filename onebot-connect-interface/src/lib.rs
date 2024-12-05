@@ -50,8 +50,8 @@ impl Error {
         Self::Deserialize(Box::new(e))
     }
 
-    pub fn not_supported(msg: impl AsRef<str>) -> Self {
-        Self::NotSupported(msg.as_ref().into())
+    pub fn not_supported(msg: impl Into<String>) -> Self {
+        Self::NotSupported(msg.into())
     }
 
     pub fn closed<E: ErrTrait + Send + 'static>(e: E) -> Self {

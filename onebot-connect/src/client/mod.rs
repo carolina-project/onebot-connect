@@ -94,11 +94,11 @@ impl Client for TxClient {
 
     async fn get_config<'a, 'b: 'a>(
         &'a self,
-        key: impl AsRef<str> + Send + 'b,
+        key: impl Into<String> + Send + 'b,
     ) -> Result<Option<serde_value::Value>, OCError> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(Command::GetConfig(key.as_ref().to_owned(), tx))
+            .send(Command::GetConfig(key.into(), tx))
             .await
             .map_err(OCError::closed)?;
 
@@ -107,11 +107,11 @@ impl Client for TxClient {
 
     async fn set_config<'a, 'b: 'a>(
         &'a self,
-        key: impl AsRef<str> + Send + 'b,
+        key: impl Into<String> + Send + 'b,
         value: serde_value::Value,
     ) -> Result<(), OCError> {
         let (tx, rx) = oneshot::channel();
-        let entry = (key.as_ref().to_owned(), value);
+        let entry = (key.into(), value);
         self.tx.send(Command::SetConfig(entry, tx)).await.unwrap();
         Ok(rx.await.map_err(OCError::closed)??)
     }

@@ -53,7 +53,7 @@ mod recv {
     pub enum Command {
         /// Send action and receive response
         Action(ActionArgs, ActionResponder),
-        /// Respond to the event by its id
+        /// Respond to the event by id
         Respond(String, Vec<ActionArgs>),
         /// Get connection config
         GetConfig(String, oneshot::Sender<Option<Value>>),
@@ -90,7 +90,7 @@ mod recv {
             self,
         ) -> impl Future<Output = Result<(Self::Source, Self::Provider, Self::Message), Self::Error>>;
 
-        fn with_authorization(self, access_token: impl AsRef<str>) -> Self;
+        fn with_authorization(self, access_token: impl Into<String>) -> Self;
     }
 }
 
@@ -119,7 +119,7 @@ pub trait Client {
     #[allow(unused)]
     fn get_config<'a, 'b: 'a>(
         &'a self,
-        key: impl AsRef<str> + Send + 'b,
+        key: impl Into<String> + Send + 'b,
     ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_ {
         async { Ok(None) }
     }
@@ -128,10 +128,10 @@ pub trait Client {
     #[allow(unused)]
     fn set_config<'a, 'b: 'a>(
         &'a self,
-        key: impl AsRef<str> + Send + 'b,
+        key: impl Into<String> + Send + 'b,
         value: Value,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        async move { Err(ConfigError::UnknownKey(key.as_ref().into()).into()) }
+        async move { Err(ConfigError::UnknownKey(key.into()).into()) }
     }
 
     /// Client releasing logic, such as sending actions stored.

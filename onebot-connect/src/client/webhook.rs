@@ -6,6 +6,7 @@ extern crate http as http_lib;
 use onebot_connect_interface::{client::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::Mutex;
+use reqwest::redirect::Action;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 type ActionsTx = oneshot::Sender<Vec<Action>>;
@@ -101,7 +102,60 @@ pub struct WebhookConnect {
     access_token: Option<String>,
 }
 impl WebhookConnect {
-    pub fn new() {}
+    pub fn new() -> Self {}
+
+    async fn manage_task(
+        mut event_rx: mpsc::Receiver<(Event, ActionsTx)>,
+        msg_tx: mpsc::Sender<RecvMessage>,
+        cmd_rx: mpsc::Receiver<Command>,
+    ) -> Result<(), crate::Error> {
+        let mut actions_map: FxHashMap<String, ActionsTx> = FxHashMap::default();
+
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                Command::Action(_, _) => log::error!("send action actively not supported"),
+                Command::Respond(id, actions) => match actions_map.remove(&id) {
+                    Some(tx) => tx
+                        .send(
+                            actions
+                                .into_iter()
+                                .map(|ActionArgs { action, self_ }| Action {
+                                    action,
+                                    echo: None,
+                                    self_,
+                                })
+                                .collect(),
+                        )
+                        .map_err(crate::Error::channel_closed)?,
+                    None => {}
+                },
+                Command::GetConfig(_, _) => todo!(),
+                Command::SetConfig(_, _) => todo!(),
+                Command::Close(_) => todo!(),
+            }
+        }
+
+        loop {
+            tokio::select! {
+                result = event_rx.recv() => {
+                    if let Some((event, actions_tx)) = result {
+                        actions_map.insert(event.id.clone(), actions_tx);
+
+                        msg_tx
+                            .send(RecvMessage::Event(event))
+                            .await
+                            .map_err(crate::Error::channel_closed)?
+                    } else {
+                        break
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_event(event: Event, tx: ActionsTx, map: FxHashMap<String, ActionsTx>) {}
 }
 impl Connect for WebhookConnect {
     type Error = crate::Error;
@@ -116,19 +170,21 @@ impl Connect for WebhookConnect {
         todo!()
     }
 
-    fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
+    fn with_authorization(self, access_token: impl Into<String>) -> Self {
         todo!()
     }
 }
 
 pub struct WebhookClient {
-    action_tx: ActionsTx,
-    actions: Arc<Mutex<Vec<Action>>>,
+    event_id: String,
+    cmd_tx: mpsc::Sender<Command>,
+    actions: Arc<Mutex<Vec<ActionArgs>>>,
 }
 impl WebhookClient {
-    pub fn new(action_tx: ActionsTx) -> Self {
+    pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::Sender<Command>) -> Self {
         Self {
-            action_tx,
+            event_id: event_id.into(),
+            cmd_tx,
             actions: Default::default(),
         }
     }
@@ -143,11 +199,7 @@ impl Client for WebhookClient {
         action: onebot_types::ob12::action::ActionType,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCError> {
-        self.actions.lock().push(Action {
-            action,
-            echo: None,
-            self_,
-        });
+        self.actions.lock().push(ActionArgs { action, self_ });
         Ok(None)
     }
 
@@ -155,31 +207,36 @@ impl Client for WebhookClient {
     where
         Self: Sized,
     {
-        self.action_tx
-            .send(std::mem::take(&mut self.actions.lock()))
-            .unwrap();
-        Ok(())
+        let actions = std::mem::take(&mut *self.actions.lock());
+        self.cmd_tx
+            .send(Command::Respond(self.event_id, actions))
+            .await
+            .map_err(OCError::closed)
     }
 }
 
 pub struct WebhookClientProvider {
-    action_tx: Option<ActionsTx>,
+    event_id: Option<String>,
+    cmd_tx: mpsc::Sender<Command>,
 }
 impl WebhookClientProvider {
-    pub fn new() -> Self {
-        Self { action_tx: None }
+    pub fn new(cmd_tx: mpsc::Sender<Command>) -> Self {
+        Self {
+            event_id: None,
+            cmd_tx,
+        }
     }
 
-    pub fn set_sender(&mut self, sender: ActionsTx) {
-        self.action_tx = Some(sender);
+    pub fn set_event(&mut self, id: String) {
+        self.event_id = Some(id);
     }
 }
 impl ClientProvider for WebhookClientProvider {
     type Output = WebhookClient;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        if let Some(tx) = self.action_tx.take() {
-            Ok(WebhookClient::new(tx))
+        if let Some(id) = self.event_id.take() {
+            Ok(WebhookClient::new(id, self.cmd_tx.clone()))
         } else {
             Err(OCError::not_supported("send action actively not supported"))
         }

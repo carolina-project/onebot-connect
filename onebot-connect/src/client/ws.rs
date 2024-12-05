@@ -68,9 +68,9 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         ))
     }
 
-    fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
+    fn with_authorization(self, access_token: impl Into<String>) -> Self {
         Self {
-            access_token: Some(access_token.as_ref().to_owned()),
+            access_token: Some(access_token.into()),
             ..self
         }
     }

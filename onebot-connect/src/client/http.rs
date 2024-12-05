@@ -146,9 +146,9 @@ impl Connect for HttpConnect {
     type Message = ();
     type Error = crate::Error;
 
-    fn with_authorization(self, access_token: impl AsRef<str>) -> Self {
+    fn with_authorization(self, access_token: impl Into<String>) -> Self {
         Self {
-            access_token: Some(access_token.as_ref().into()),
+            access_token: Some(access_token.into()),
             ..self
         }
     }
