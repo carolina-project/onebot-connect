@@ -1,37 +1,104 @@
 use super::*;
-use hyper::{body::Incoming as IncomingBody, service::Service};
+use bytes::Bytes;
+use http_body_util::{BodyDataStream, BodyExt, Full};
+use hyper::{body::Incoming as IncomingBody, header::AUTHORIZATION, service::Service, StatusCode};
+extern crate http as http_lib;
+
 use onebot_connect_interface::ConfigError;
-use onebot_types::ob12::action::Action;
+use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::Mutex;
 use std::{future::Future, pin::Pin, sync::Arc};
 
-type ActionsSender = oneshot::Sender<Vec<Action>>;
+type ActionsTx = oneshot::Sender<Option<Vec<Action>>>;
+type ActionsRx = oneshot::Receiver<Vec<Action>>;
+type Response = hyper::Response<Option<Bytes>>;
 
 pub struct WebhookServer {
-    access_token: Option<String>,
+    /// Authorization header and `access_token` query param, choose one to use
+    access_token: Arc<Option<(String, String)>>,
+    /// Event transmitter channel, send event and its callback(actions)
+    event_tx: mpsc::Sender<(Event, ActionsTx)>,
 }
 
-impl Service<IncomingBody> for WebhookServer {
-    type Response = hyper::Response<IncomingBody>;
+#[inline]
+fn mk_resp<'a>(status: hyper::StatusCode, data: Option<impl Into<Bytes>>) -> Response {
+    hyper::Response::builder()
+        .status(status)
+        .body(data.map(Into::into))
+        .unwrap()
+}
 
-    type Error = hyper::Error;
+#[derive(Debug, serde::Deserialize)]
+struct ReqQuery<'a> {
+    access_token: &'a str,
+}
+
+type Req = http_lib::Request<Bytes>;
+
+impl Service<Req> for WebhookServer {
+    type Response = Response;
+
+    type Error = Response;
 
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn call(&self, req: IncomingBody) -> Self::Future {
+    fn call(&self, req: Req) -> Self::Future {
+        let access_token = self.access_token.clone();
+        let event_tx = self.event_tx.clone();
         Box::pin(async move {
+            let req = hyper::Request::from(req);
 
-            Ok(())
+            let mut passed = false;
+            if let Some((header_token, query_token)) = access_token.as_ref() {
+                if let Some(header) = req.headers().get(AUTHORIZATION) {
+                    if header == header_token {
+                        passed = true;
+                    }
+                } else if let Some(query) = req.uri().query() {
+                    let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
+                        mk_resp(
+                            StatusCode::BAD_REQUEST,
+                            Some(format!("invalid request query: {}", e)),
+                        )
+                    })?;
+                    if params.access_token == query_token {
+                        passed = true;
+                    }
+                }
+            }
+            if !passed {
+                return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
+            }
+
+            let event: Event = serde_json::from_slice(&req.into_body()).map_err(|e| {
+                mk_resp(
+                    StatusCode::BAD_REQUEST,
+                    Some(format!("invalid data: {}", e)),
+                )
+            })?;
+            let (tx, rx) = oneshot::channel();
+            event_tx.send((event, tx)).await.unwrap();
+            if let Some(actions) = rx.await.unwrap() {
+                let json = serde_json::to_vec(&actions).map_err(|e| {
+                    mk_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Some(format!("error while serializing actions: {}", e)),
+                    )
+                })?;
+                Ok(mk_resp(StatusCode::OK, Some(json)))
+            } else {
+                Ok(mk_resp(StatusCode::NO_CONTENT, None::<Bytes>))
+            }
         })
     }
 }
 
 pub struct WebhookClient {
-    action_tx: oneshot::Sender<Vec<Action>>,
+    action_tx: ActionsTx,
     actions: Arc<Mutex<Vec<Action>>>,
 }
 impl WebhookClient {
-    pub fn new(action_tx: ActionsSender) -> Self {
+    pub fn new(action_tx: ActionsTx) -> Self {
         Self {
             action_tx,
             actions: Default::default(),
@@ -72,18 +139,21 @@ impl Client for WebhookClient {
     }
 
     async fn release(self) -> Result<(), OCError>
-        where
-            Self: Sized, {
-        self.action_tx.send(std::mem::take(&mut self.actions.lock())).unwrap();
+    where
+        Self: Sized,
+    {
+        self.action_tx
+            .send(std::mem::take(&mut self.actions.lock()))
+            .unwrap();
         Ok(())
     }
 }
 
 pub struct WebhookClientProvider {
-    action_tx: Option<ActionsSender>,
+    action_tx: Option<ActionsTx>,
 }
 impl WebhookClientProvider {
-    pub fn set_sender(&mut self, sender: ActionsSender) {
+    pub fn set_sender(&mut self, sender: ActionsTx) {
         self.action_tx = Some(sender);
     }
 }

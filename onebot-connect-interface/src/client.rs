@@ -31,10 +31,12 @@ mod recv {
 
     use super::*;
 
+    pub type ActionResponder = oneshot::Sender<Result<Value, Error>>;
+
     /// Messages received from connection
     #[derive(Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
-        Event(Vec<Event>),
+        Event(Event),
         /// Response after close command
         /// Ok means closed successfully, Err means close failed
         Close(Result<ClosedReason, String>),
@@ -45,14 +47,19 @@ mod recv {
     pub struct ActionArgs {
         pub action: ActionType,
         pub self_: Option<BotSelf>,
-        pub resp_tx: oneshot::Sender<Result<Value, Error>>,
     }
 
     /// Command enum to represent different commands that can be sent to connection
     pub enum Command {
-        Action(ActionArgs),
+        /// Send action and receive response
+        Action(ActionArgs, ActionResponder),
+        /// Respond to the event by its id
+        Respond(String, Vec<ActionArgs>),
+        /// Get connection config
         GetConfig(String, oneshot::Sender<Option<Value>>),
+        /// Set connection config
         SetConfig((String, Value), oneshot::Sender<Result<(), ConfigError>>),
+        /// Close connection
         Close(oneshot::Sender<Result<ClosedReason, String>>),
     }
 
