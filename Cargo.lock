@@ -762,6 +762,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
+ "hyper-util",
  "log",
  "onebot-connect-interface",
  "onebot-types",

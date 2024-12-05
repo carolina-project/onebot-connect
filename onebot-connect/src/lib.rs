@@ -17,7 +17,7 @@ pub enum Error {
     #[error("ws closed")]
     ConnectionClosed,
     #[error("communication channel closed")]
-    ChannelClosed(Box<dyn ErrTrait + Send>),
+    ChannelClosed,
     #[cfg(feature = "ws")]
     #[error(transparent)]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
@@ -26,8 +26,4 @@ pub enum Error {
     Reqwest(#[from] reqwest::Error),
 }
 
-impl Error {
-    pub fn channel_closed<E: ErrTrait + Send + 'static>(e: E) -> Self {
-        Self::ChannelClosed(Box::new(e))
-    }
-}
+impl Error {}

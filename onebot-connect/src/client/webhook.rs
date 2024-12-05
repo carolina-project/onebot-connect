@@ -1,23 +1,43 @@
 use super::*;
 use bytes::Bytes;
-use hyper::{header::AUTHORIZATION, service::Service, StatusCode};
+use http_body_util::BodyExt;
+use hyper::{body::Incoming, header::AUTHORIZATION, server::conn::http1, service::Service, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
 extern crate http as http_lib;
+
+use crate::Error as AllErr;
 
 use onebot_connect_interface::{client::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::Mutex;
-use reqwest::redirect::Action;
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
 
 type ActionsTx = oneshot::Sender<Vec<Action>>;
 type ActionsRx = oneshot::Receiver<Vec<Action>>;
 type Response = hyper::Response<Option<Bytes>>;
+type EventCallTx = mpsc::Sender<(Event, ActionsTx)>;
 
+#[derive(Clone)]
 pub struct WebhookServer {
     /// Authorization header and `access_token` query param, choose one to use
     access_token: Arc<Option<(String, String)>>,
     /// Event transmitter channel, send event and its callback(actions)
-    event_tx: mpsc::Sender<(Event, ActionsTx)>,
+    event_tx: EventCallTx,
+}
+
+impl WebhookServer {
+    pub fn new(event_tx: EventCallTx) -> Self {
+        Self {
+            access_token: Default::default(),
+            event_tx,
+        }
+    }
+
+    pub fn with_authorization(&mut self, access_token: impl Into<String>) {
+        let access_token = access_token.into();
+        self.access_token = Arc::new(Some((format!("Bearer {}", access_token), access_token)));
+    }
 }
 
 #[inline]
@@ -33,7 +53,7 @@ struct ReqQuery<'a> {
     access_token: &'a str,
 }
 
-type Req = http_lib::Request<Bytes>;
+type Req = http_lib::Request<Incoming>;
 
 impl Service<Req> for WebhookServer {
     type Response = Response;
@@ -71,6 +91,7 @@ impl Service<Req> for WebhookServer {
                 return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
             }
 
+            let data = req.into_body().collect().await?;
             // parse event
             let event: Event = serde_json::from_slice(&req.into_body()).map_err(|e| {
                 mk_resp(
@@ -98,42 +119,50 @@ impl Service<Req> for WebhookServer {
     }
 }
 
+type ActionsMap = FxHashMap<String, ActionsTx>;
 pub struct WebhookConnect {
     access_token: Option<String>,
+    addr: SocketAddr,
 }
 impl WebhookConnect {
-    pub fn new() -> Self {}
+    pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        Self {
+            access_token: None,
+            addr: addr.into(),
+        }
+    }
+
+    async fn server_task(
+        addr: SocketAddr,
+        event_tx: EventCallTx,
+        access_token: Option<impl Into<String>>,
+    ) -> Result<(), AllErr> {
+        let listener = TcpListener::bind(addr).await?;
+
+        let mut serv = WebhookServer::new(event_tx);
+        if let Some(access_token) = access_token {
+            serv.with_authorization(access_token);
+        }
+
+        loop {
+            let (tcp, _) = listener.accept().await?;
+            let io = TokioIo::new(tcp);
+
+            let serv_clone = serv.clone();
+            tokio::task::spawn(async move {
+                if let Err(err) = http1::Builder::new().serve_connection(io, serv_clone).await {
+                    println!("Failed to serve connection: {:?}", err);
+                }
+            });
+        }
+    }
 
     async fn manage_task(
         mut event_rx: mpsc::Receiver<(Event, ActionsTx)>,
         msg_tx: mpsc::Sender<RecvMessage>,
-        cmd_rx: mpsc::Receiver<Command>,
+        mut cmd_rx: mpsc::Receiver<Command>,
     ) -> Result<(), crate::Error> {
-        let mut actions_map: FxHashMap<String, ActionsTx> = FxHashMap::default();
-
-        while let Some(cmd) = cmd_rx.recv().await {
-            match cmd {
-                Command::Action(_, _) => log::error!("send action actively not supported"),
-                Command::Respond(id, actions) => match actions_map.remove(&id) {
-                    Some(tx) => tx
-                        .send(
-                            actions
-                                .into_iter()
-                                .map(|ActionArgs { action, self_ }| Action {
-                                    action,
-                                    echo: None,
-                                    self_,
-                                })
-                                .collect(),
-                        )
-                        .map_err(crate::Error::channel_closed)?,
-                    None => {}
-                },
-                Command::GetConfig(_, _) => todo!(),
-                Command::SetConfig(_, _) => todo!(),
-                Command::Close(_) => todo!(),
-            }
-        }
+        let mut actions_map = ActionsMap::default();
 
         loop {
             tokio::select! {
@@ -144,7 +173,14 @@ impl WebhookConnect {
                         msg_tx
                             .send(RecvMessage::Event(event))
                             .await
-                            .map_err(crate::Error::channel_closed)?
+                            .map_err(|_| AllErr::ChannelClosed)?
+                    } else {
+                        break
+                    }
+                }
+                cmd = cmd_rx.recv() => {
+                    if let Some(cmd) = cmd {
+                        Self::handle_cmd(cmd, &mut actions_map).await?;
                     } else {
                         break
                     }
@@ -155,7 +191,37 @@ impl WebhookConnect {
         Ok(())
     }
 
-    async fn handle_event(event: Event, tx: ActionsTx, map: FxHashMap<String, ActionsTx>) {}
+    async fn handle_cmd(cmd: Command, actions_map: &mut ActionsMap) -> Result<(), AllErr> {
+        match cmd {
+            Command::Action(_, tx) => tx
+                .send(Err(OCError::not_supported("send action actively").into()))
+                .map_err(|_| AllErr::ChannelClosed),
+            Command::Respond(id, actions) => {
+                if let Some(tx) = actions_map.remove(&id) {
+                    tx.send(
+                        actions
+                            .into_iter()
+                            .map(|ActionArgs { action, self_ }| Action {
+                                action,
+                                echo: None,
+                                self_,
+                            })
+                            .collect(),
+                    )
+                    .map_err(|_| AllErr::ChannelClosed)?;
+                } else {
+                    log::error!("cannot find event: {}", id);
+                }
+
+                Ok(())
+            }
+            Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
+            Command::SetConfig((key, _), tx) => tx
+                .send(Err(ConfigError::UnknownKey(key)))
+                .map_err(|_| AllErr::ChannelClosed),
+            Command::Close(_) => todo!(),
+        }
+    }
 }
 impl Connect for WebhookConnect {
     type Error = crate::Error;
@@ -171,7 +237,9 @@ impl Connect for WebhookConnect {
     }
 
     fn with_authorization(self, access_token: impl Into<String>) -> Self {
-        todo!()
+        Self {
+            access_token: Some(access_token.into()),
+        }
     }
 }
 
