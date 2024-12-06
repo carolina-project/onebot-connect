@@ -2,25 +2,23 @@ use super::*;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    body::Incoming, header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode,
+    header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode,
 };
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 extern crate http as http_lib;
 
-use crate::Error as AllErr;
+use crate::{common::http::{mk_resp, Req, ReqQuery, Response}, Authorization, Error as AllErr};
 
 use onebot_connect_interface::{app::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::{Mutex, RwLock};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
-type ActionsTx = oneshot::Sender<Vec<Action>>;
-type Response = hyper::Response<Full<Bytes>>;
-type EventCallTx = mpsc::UnboundedSender<(Event, ActionsTx)>;
+type EventResponder = oneshot::Sender<Vec<Action>>;
+type EventCallTx = mpsc::UnboundedSender<(Event, EventResponder)>;
 
 /// Authorization header and `access_token` query param, choose one to use
-type Authorization = Option<(String, String)>;
 type WebhookConfShared = Arc<RwLock<WebhookConfig>>;
 
 #[derive(Debug, Clone, Default)]
@@ -35,20 +33,7 @@ pub struct WebhookServer {
     event_tx: EventCallTx,
 }
 
-#[inline]
-fn mk_resp<'a>(status: hyper::StatusCode, data: Option<impl Into<Bytes>>) -> Response {
-    hyper::Response::builder()
-        .status(status)
-        .body(data.map(|b| Full::new(b.into())).unwrap_or_default())
-        .unwrap()
-}
 
-#[derive(Debug, serde::Deserialize)]
-struct ReqQuery<'a> {
-    access_token: &'a str,
-}
-
-type Req = http_lib::Request<Incoming>;
 impl WebhookServer {
     pub fn new(event_tx: EventCallTx, config: WebhookConfig) -> Self {
         Self {
@@ -116,7 +101,7 @@ impl WebhookServer {
     }
 }
 
-type ActionsMap = FxHashMap<String, ActionsTx>;
+type ActionsMap = FxHashMap<String, EventResponder>;
 pub struct WebhookConnect {
     config: WebhookConfig,
     addr: SocketAddr,
@@ -160,7 +145,7 @@ impl WebhookConnect {
     }
 
     async fn manage_task(
-        mut event_rx: mpsc::UnboundedReceiver<(Event, ActionsTx)>,
+        mut event_rx: mpsc::UnboundedReceiver<(Event, EventResponder)>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Result<(), crate::Error> {

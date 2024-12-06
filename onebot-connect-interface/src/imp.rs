@@ -1,6 +1,6 @@
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use onebot_types::ob12::{self, event::Event, BotSelf};
+use onebot_types::ob12::{self, action::RetCode, event::Event, BotSelf};
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 use tokio::sync::oneshot;
@@ -18,7 +18,7 @@ impl<T: Impl> CloseError<T> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ActionEcho {
     Inner(u64),
     Outer(String),
@@ -28,6 +28,10 @@ pub struct Action {
     action: ob12::action::Action,
     echo: ActionEcho,
     self_: Option<BotSelf>,
+}
+pub enum ActionResponse {
+    Ok(Value),
+    Error { retcode: RetCode, message: String },
 }
 /// Messages received from connection
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,7 +46,7 @@ pub enum RecvMessage {
 pub enum Command {
     Event(Event),
     /// Respond to the action by echo
-    Respond(ActionEcho, Value),
+    Respond(ActionEcho, ActionResponse),
     /// Get connection config
     GetConfig(String, oneshot::Sender<Option<Value>>),
     /// Set connection config
@@ -59,15 +63,15 @@ pub trait MessageSource {
 pub trait Impl {
     fn send_event_impl(&self, event: Event) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
-    fn respond_action(
+    fn respond(
         &self,
         echo: ActionEcho,
-        value: Value,
+        data: ActionResponse,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
 /// Trait for providing event transmitters.
-pub trait ImplHandleProvider {
+pub trait ImplProvider {
     type Output: Impl;
 
     fn provide(&mut self) -> Result<Self::Output, Error>;
@@ -83,7 +87,7 @@ impl<T: MessageSource> MessageSourceDyn for T {
     }
 }
 
-pub trait ImplHandleDyn {
+pub trait ImplDyn {
     fn send_event_impl(
         &self,
         event: Event,
@@ -92,11 +96,11 @@ pub trait ImplHandleDyn {
     fn respond_action(
         &self,
         echo: ActionEcho,
-        value: Value,
+        data: ActionResponse,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 }
 
-impl<T: Impl + Send + 'static> ImplHandleDyn for T {
+impl<T: Impl + Send + 'static> ImplDyn for T {
     fn send_event_impl(
         &self,
         event: Event,
@@ -107,15 +111,15 @@ impl<T: Impl + Send + 'static> ImplHandleDyn for T {
     fn respond_action(
         &self,
         echo: ActionEcho,
-        value: Value,
+        data: ActionResponse,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
-        Box::pin(self.respond_action(echo, value))
+        Box::pin(self.respond(echo, data))
     }
 }
 
 pub trait Create {
     type Source: MessageSource;
-    type Provider: ImplHandleProvider;
+    type Provider: ImplProvider;
     type Message: Debug;
 
     fn create(
