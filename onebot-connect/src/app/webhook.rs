@@ -250,7 +250,7 @@ pub struct WebhookApp {
     cmd_tx: mpsc::UnboundedSender<Command>,
 }
 impl WebhookApp {
-    pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
+    pub(crate) fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             is_owner: true,
             inner: WebhookAppInner {

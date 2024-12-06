@@ -244,9 +244,7 @@ impl HttpCreate {
 
 impl Create for HttpCreate {
     type Source = RxMessageSource;
-
     type Provider = HttpImplProvider;
-
     type Message = ();
 
     async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), OCError> {
@@ -262,6 +260,12 @@ impl Create for HttpCreate {
             HttpImplProvider::new(cmd_tx),
             (),
         ))
+    }
+
+    fn with_authorization(mut self, access_token: String) -> Self {
+        let token = access_token.into();
+        self.config.authorization = Some((format!("Bearer {}", token), token));
+        self
     }
 }
 
