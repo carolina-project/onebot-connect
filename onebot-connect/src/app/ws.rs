@@ -4,7 +4,7 @@ use futures_util::{
 };
 use http::{header::AUTHORIZATION, HeaderValue};
 use onebot_connect_interface::{
-    client::{ActionArgs, ActionResponder, ClosedReason, Command, Connect, RecvMessage},
+    app::{ActionArgs, ActionResponder, ClosedReason, Command, Connect, RecvMessage},
     ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{self, event::Event};
@@ -23,9 +23,9 @@ use tokio_tungstenite::{
 
 pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-use crate::client::generate_echo;
+use crate::app::generate_echo;
 
-use super::{ActionMap, RxMessageSource, TxClientProvider};
+use super::{ActionMap, RxMessageSource, TxAppProvider};
 
 /// OneBot Connect Websocket Generator
 pub struct WSConnect<R>
@@ -48,7 +48,7 @@ impl<R: IntoClientRequest + Unpin> WSConnect<R> {
 impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
     type Error = crate::Error;
     type Message = ();
-    type Provider = TxClientProvider;
+    type Provider = TxAppProvider;
     type Source = RxMessageSource;
 
     async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
@@ -63,7 +63,7 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
         Ok((
             RxMessageSource::new(msg_rx),
-            TxClientProvider::new(cmd_tx),
+            TxAppProvider::new(cmd_tx),
             (),
         ))
     }

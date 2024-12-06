@@ -10,7 +10,7 @@ extern crate http as http_lib;
 
 use crate::Error as AllErr;
 
-use onebot_connect_interface::{client::Connect, ConfigError};
+use onebot_connect_interface::{app::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::{Mutex, RwLock};
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
@@ -129,22 +129,20 @@ impl WebhookConnect {
         }
     }
 
-    async fn service(
-        serv: WebhookServer,
-        req: Req,
-    ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-        Ok(serv.handle_req(req).await.unwrap_or_else(|e| e))
-    }
-
     async fn server_task(
         addr: SocketAddr,
         event_tx: EventCallTx,
         config: WebhookConfig,
     ) -> Result<(), AllErr> {
+        async fn service(
+            serv: WebhookServer,
+            req: Req,
+        ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
+            Ok(serv.handle_req(req).await.unwrap_or_else(|e| e))
+        }
+
         let listener = TcpListener::bind(addr).await?;
-
         let serv = WebhookServer::new(event_tx, config);
-
         loop {
             let (tcp, _) = listener.accept().await?;
             let io = TokioIo::new(tcp);
@@ -152,7 +150,7 @@ impl WebhookConnect {
             let serv = serv.clone();
             tokio::task::spawn(async move {
                 if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(|r| Self::service(serv.clone(), r)))
+                    .serve_connection(io, service_fn(|r| service(serv.clone(), r)))
                     .await
                 {
                     println!("Failed to serve connection: {:?}", err);
@@ -230,7 +228,7 @@ impl Connect for WebhookConnect {
 
     type Message = ();
 
-    type Provider = WebhookClientProvider;
+    type Provider = WebhookAppProvider;
 
     type Source = RxMessageSource;
 
@@ -244,7 +242,7 @@ impl Connect for WebhookConnect {
 
         Ok((
             RxMessageSource::new(msg_rx),
-            WebhookClientProvider::new(cmd_tx),
+            WebhookAppProvider::new(cmd_tx),
             (),
         ))
     }
@@ -256,12 +254,12 @@ impl Connect for WebhookConnect {
     }
 }
 
-pub struct WebhookClient {
+pub struct WebhookApp {
     event_id: String,
     cmd_tx: mpsc::UnboundedSender<Command>,
     actions: Arc<Mutex<Vec<ActionArgs>>>,
 }
-impl WebhookClient {
+impl WebhookApp {
     pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             event_id: event_id.into(),
@@ -270,7 +268,7 @@ impl WebhookClient {
         }
     }
 }
-impl Client for WebhookClient {
+impl App for WebhookApp {
     fn response_supported(&self) -> bool {
         false
     }
@@ -295,11 +293,11 @@ impl Client for WebhookClient {
     }
 }
 
-pub struct WebhookClientProvider {
+pub struct WebhookAppProvider {
     event_id: Option<String>,
     cmd_tx: mpsc::UnboundedSender<Command>,
 }
-impl WebhookClientProvider {
+impl WebhookAppProvider {
     pub fn new(cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             event_id: None,
@@ -311,12 +309,12 @@ impl WebhookClientProvider {
         self.event_id = Some(id);
     }
 }
-impl ClientProvider for WebhookClientProvider {
-    type Output = WebhookClient;
+impl AppProvider for WebhookAppProvider {
+    type Output = WebhookApp;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
         if let Some(id) = self.event_id.take() {
-            Ok(WebhookClient::new(id, self.cmd_tx.clone()))
+            Ok(WebhookApp::new(id, self.cmd_tx.clone()))
         } else {
             Err(OCError::not_supported("send action actively not supported"))
         }

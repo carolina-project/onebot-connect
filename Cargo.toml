@@ -1,2 +1,3 @@
 [workspace]
 members = [ "onebot-connect","onebot-connect-interface"]
+resolver = "2"

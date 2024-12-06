@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # OneBot lib
-onebot-connect-interface = { path = "../onebot-connect-interface", features = ["client_recv"]}
+onebot-connect-interface = { path = "../onebot-connect-interface", features = ["app_recv"]}
 onebot-types = { path = "../../onebot-types" }
 
 # Basic utilities
@@ -40,8 +40,8 @@ http-body = { version = "1", optional = true }
 
 [features]
 default = []
-client = []
-server = []
+app = []
+imp = []
 hyper = ["dep:hyper", "dep:http", "dep:http-body-util", "dep:hyper-util"]
 ws = ["tokio-tungstenite", "dep:http"]
 http = ["reqwest", "hyper"]

@@ -22,7 +22,7 @@ pub enum ClosedReason {
     Partial(String),
 }
 
-#[cfg(feature = "client_recv")]
+#[cfg(feature = "app_recv")]
 mod recv {
     use std::fmt::Debug;
 
@@ -68,10 +68,11 @@ mod recv {
         fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
-    pub trait ClientProvider {
-        type Output: Client;
+    /// OneBot app side provider
+    pub trait AppProvider {
+        type Output: App;
 
-        /// Provides a client instance.
+        /// Provides a OneBot app instance.
         fn provide(&mut self) -> Result<Self::Output, Error>;
     }
 
@@ -82,7 +83,7 @@ mod recv {
         /// Message after connection established successfully.
         type Message: Debug;
         /// Client for applcation to call.
-        type Provider: ClientProvider;
+        type Provider: AppProvider;
         /// Message source for receiving messages.
         type Source: MessageSource;
 
@@ -94,13 +95,13 @@ mod recv {
     }
 }
 
-#[cfg(feature = "client_recv")]
+#[cfg(feature = "app_recv")]
 pub use recv::*;
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
-pub trait Client {
+pub trait App {
     /// Checks if the client supports action response.
     /// For example, WebSocket and Http supports response, WebHook doesn't.
     fn response_supported(&self) -> bool {
@@ -115,7 +116,7 @@ pub trait Client {
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
 
-    /// Get config from connection's client.
+    /// Get config from connection.
     #[allow(unused)]
     fn get_config<'a, 'b: 'a>(
         &'a self,
@@ -134,7 +135,7 @@ pub trait Client {
         async move { Err(ConfigError::UnknownKey(key.into()).into()) }
     }
 
-    /// Client releasing logic, such as sending actions stored.
+    /// App client releasing logic, such as sending actions stored.
     fn release(self) -> impl Future<Output = Result<(), Error>> + Send + 'static
     where
         Self: Sized,
@@ -143,8 +144,8 @@ pub trait Client {
     }
 }
 
-/// Extension trait for `Client` to provide dynamic dispatching capabilities
-pub trait ClientDyn {
+/// Extension trait for `App` to provide dynamic dispatching capabilities
+pub trait AppDyn {
     fn response_supported(&self) -> bool {
         true
     }
@@ -174,7 +175,7 @@ pub trait ClientDyn {
     }
 }
 
-impl<T: Client> ClientDyn for T {
+impl<T: App> AppDyn for T {
     fn response_supported(&self) -> bool {
         self.response_supported()
     }
@@ -216,8 +217,8 @@ fn process_resp<R>(resp: Option<R>) -> Result<R, Error> {
     }
 }
 
-/// Extension trait for `Client` to provide additional functionalities
-pub trait ClientExt {
+/// Extension trait for `App` to provide additional functionalities
+pub trait AppExt {
     fn send_action<E, A>(
         &self,
         action: A,
@@ -249,7 +250,7 @@ pub trait ClientExt {
     }
 }
 
-impl<T: Client + Sync> ClientExt for T {
+impl<T: App + Sync> AppExt for T {
     fn send_action<E, A>(
         &self,
         action: A,
@@ -273,7 +274,7 @@ impl<T: Client + Sync> ClientExt for T {
     }
 }
 
-impl ClientExt for dyn ClientDyn + Sync {
+impl AppExt for dyn AppDyn + Sync {
     fn send_action<E, A>(
         &self,
         action: A,

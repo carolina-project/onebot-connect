@@ -1,13 +1,13 @@
 use std::net::SocketAddr;
 
 use http::{header::AUTHORIZATION, StatusCode};
-use onebot_connect_interface::client::Connect;
+use onebot_connect_interface::app::Connect;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_tungstenite::WebSocketStream;
 
 use super::{
     ws::WSTaskHandle,
-    RxMessageSource, TxClientProvider,
+    RxMessageSource, TxAppProvider,
 };
 
 pub type WebSocketConn = WebSocketStream<TcpStream>;
@@ -21,7 +21,7 @@ impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
     type Error = crate::Error;
     type Message = SocketAddr;
     type Source = RxMessageSource;
-    type Provider = TxClientProvider;
+    type Provider = TxAppProvider;
 
     async fn connect(
         self,
@@ -61,7 +61,7 @@ impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
 
         Ok((
             RxMessageSource::new(conn_handle.msg_rx),
-            TxClientProvider::new(conn_handle.cmd_tx),
+            TxAppProvider::new(conn_handle.cmd_tx),
             addr
         ))
     }

@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use ::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
-use onebot_connect_interface::client::{ClientExt, Connect};
+use onebot_connect_interface::app::{AppExt, Connect};
 use onebot_types::ob12::{
     action::{Action, RespData, RespError},
     event::Event,
@@ -11,7 +11,7 @@ use serde_value::Value;
 use super::*;
 
 pub struct HttpMessageSource {
-    client: HttpClient,
+    client: HttpApp,
     timeout: i64,
     limit: i64,
     interval_ms: u64,
@@ -19,11 +19,11 @@ pub struct HttpMessageSource {
 }
 
 impl HttpMessageSource {
-    pub fn new(client: HttpClient) -> Self {
+    pub fn new(client: HttpApp) -> Self {
         Self::with_setting(client, 0, 0, 500)
     }
 
-    pub fn with_setting(client: HttpClient, timeout: i64, limit: i64, interval_ms: u64) -> Self {
+    pub fn with_setting(client: HttpApp, timeout: i64, limit: i64, interval_ms: u64) -> Self {
         Self {
             client,
             timeout,
@@ -63,18 +63,18 @@ impl MessageSource for HttpMessageSource {
     }
 }
 
-pub struct HttpClient {
+pub struct HttpApp {
     http: reqwest::Client,
     url: Arc<String>,
 }
 
-impl HttpClient {
+impl HttpApp {
     pub fn new(conn: reqwest::Client, url: Arc<String>) -> Self {
         Self { http: conn, url }
     }
 }
 
-impl Client for HttpClient {
+impl App for HttpApp {
     async fn send_action_impl(
         &self,
         action: onebot_types::ob12::action::ActionType,
@@ -109,21 +109,21 @@ impl Client for HttpClient {
     }
 }
 
-pub struct HttpClientProvider {
+pub struct HttpAppProvider {
     http: reqwest::Client,
     url: Arc<String>,
 }
 
-impl HttpClientProvider {
+impl HttpAppProvider {
     pub fn new(http: reqwest::Client, url: Arc<String>) -> Self {
         Self { http, url }
     }
 }
-impl ClientProvider for HttpClientProvider {
-    type Output = HttpClient;
+impl AppProvider for HttpAppProvider {
+    type Output = HttpApp;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        Ok(HttpClient::new(self.http.clone(), self.url.clone()))
+        Ok(HttpApp::new(self.http.clone(), self.url.clone()))
     }
 }
 
@@ -142,7 +142,7 @@ impl HttpConnect {
 
 impl Connect for HttpConnect {
     type Source = HttpMessageSource;
-    type Provider = HttpClientProvider;
+    type Provider = HttpAppProvider;
     type Message = ();
     type Error = crate::Error;
 
@@ -165,7 +165,7 @@ impl Connect for HttpConnect {
         let http = reqwest::ClientBuilder::new()
             .default_headers(headers)
             .build()?;
-        let mut provider = HttpClientProvider::new(http, Arc::new(self.url));
+        let mut provider = HttpAppProvider::new(http, Arc::new(self.url));
         Ok((HttpMessageSource::new(provider.provide()?), provider, ()))
     }
 }

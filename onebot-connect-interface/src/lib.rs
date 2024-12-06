@@ -1,11 +1,12 @@
-use onebot_types::ob12::action::RespError;
 use std::error::Error as ErrTrait;
 
-#[cfg(feature = "server")]
-pub mod server;
+use onebot_types::ob12::action::RespError;
 
-#[cfg(feature = "client")]
-pub mod client;
+#[cfg(feature = "imp")]
+pub mod imp;
+
+#[cfg(feature = "app")]
+pub mod app;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

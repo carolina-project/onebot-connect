@@ -1,6 +1,6 @@
 use fxhash::FxHashMap;
 use onebot_connect_interface::{
-    client::{ActionArgs, Client, ClientProvider, Command, MessageSource, RecvMessage},
+    app::{ActionArgs, App, AppProvider, Command, MessageSource, RecvMessage},
     ActionResult, Error as OCError,
 };
 use rand::Rng;
@@ -57,31 +57,31 @@ impl MessageSource for RxMessageSource {
     }
 }
 
-pub struct TxClientProvider {
+pub struct TxAppProvider {
     tx: mpsc::UnboundedSender<Command>,
 }
-impl TxClientProvider {
+impl TxAppProvider {
     pub fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
         Self { tx }
     }
 }
-impl ClientProvider for TxClientProvider {
-    type Output = TxClient;
+impl AppProvider for TxAppProvider {
+    type Output = TxAppSide;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        Ok(TxClient::new(self.tx.clone()))
+        Ok(TxAppSide::new(self.tx.clone()))
     }
 }
 
-pub struct TxClient {
+pub struct TxAppSide {
     tx: mpsc::UnboundedSender<Command>,
 }
-impl TxClient {
+impl TxAppSide {
     pub fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
         Self { tx }
     }
 }
-impl Client for TxClient {
+impl App for TxAppSide {
     async fn send_action_impl(
         &self,
         action: onebot_types::ob12::action::ActionType,

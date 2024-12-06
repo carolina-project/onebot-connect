@@ -1,9 +1,9 @@
 use std::io;
 
-#[cfg(feature = "client")]
-pub mod client;
-#[cfg(feature = "server")]
-pub mod server;
+#[cfg(feature = "app")]
+pub mod app;
+#[cfg(feature = "imp")]
+pub mod imp;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
