@@ -1,7 +1,9 @@
 use super::*;
 use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::{body::Incoming, header::AUTHORIZATION, server::conn::http1, service::Service, StatusCode};
+use http_body_util::{BodyExt, Full};
+use hyper::{
+    body::Incoming, header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode,
+};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 extern crate http as http_lib;
@@ -10,41 +12,34 @@ use crate::Error as AllErr;
 
 use onebot_connect_interface::{client::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
-use parking_lot::Mutex;
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use parking_lot::{Mutex, RwLock};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 type ActionsTx = oneshot::Sender<Vec<Action>>;
-type ActionsRx = oneshot::Receiver<Vec<Action>>;
-type Response = hyper::Response<Option<Bytes>>;
-type EventCallTx = mpsc::Sender<(Event, ActionsTx)>;
+type Response = hyper::Response<Full<Bytes>>;
+type EventCallTx = mpsc::UnboundedSender<(Event, ActionsTx)>;
+
+/// Authorization header and `access_token` query param, choose one to use
+type Authorization = Option<(String, String)>;
+type WebhookConfShared = Arc<RwLock<WebhookConfig>>;
+
+#[derive(Debug, Clone, Default)]
+pub struct WebhookConfig {
+    authorization: Authorization,
+}
 
 #[derive(Clone)]
 pub struct WebhookServer {
-    /// Authorization header and `access_token` query param, choose one to use
-    access_token: Arc<Option<(String, String)>>,
+    config: WebhookConfShared,
     /// Event transmitter channel, send event and its callback(actions)
     event_tx: EventCallTx,
-}
-
-impl WebhookServer {
-    pub fn new(event_tx: EventCallTx) -> Self {
-        Self {
-            access_token: Default::default(),
-            event_tx,
-        }
-    }
-
-    pub fn with_authorization(&mut self, access_token: impl Into<String>) {
-        let access_token = access_token.into();
-        self.access_token = Arc::new(Some((format!("Bearer {}", access_token), access_token)));
-    }
 }
 
 #[inline]
 fn mk_resp<'a>(status: hyper::StatusCode, data: Option<impl Into<Bytes>>) -> Response {
     hyper::Response::builder()
         .status(status)
-        .body(data.map(Into::into))
+        .body(data.map(|b| Full::new(b.into())).unwrap_or_default())
         .unwrap()
 }
 
@@ -54,103 +49,112 @@ struct ReqQuery<'a> {
 }
 
 type Req = http_lib::Request<Incoming>;
+impl WebhookServer {
+    pub fn new(event_tx: EventCallTx, config: WebhookConfig) -> Self {
+        Self {
+            config: Arc::new(RwLock::new(config)),
+            event_tx,
+        }
+    }
 
-impl Service<Req> for WebhookServer {
-    type Response = Response;
-
-    type Error = Response;
-
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn call(&self, req: Req) -> Self::Future {
-        let access_token = self.access_token.clone();
-        let event_tx = self.event_tx.clone();
-        Box::pin(async move {
-            let req = hyper::Request::from(req);
-
-            // check access token
-            let mut passed = false;
-            if let Some((header_token, query_token)) = access_token.as_ref() {
-                if let Some(header) = req.headers().get(AUTHORIZATION) {
-                    if header == header_token {
-                        passed = true;
-                    }
-                } else if let Some(query) = req.uri().query() {
-                    let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
-                        mk_resp(
-                            StatusCode::BAD_REQUEST,
-                            Some(format!("invalid request query: {}", e)),
-                        )
-                    })?;
-                    if params.access_token == query_token {
-                        passed = true;
-                    }
+    async fn handle_req(self, req: Req) -> Result<Response, Response> {
+        let Self { config, event_tx } = self;
+        // check access token
+        let mut passed = false;
+        if let Some((header_token, query_token)) = &config.read().authorization {
+            if let Some(header) = req.headers().get(AUTHORIZATION) {
+                if header == header_token {
+                    passed = true;
                 }
-            }
-            if !passed {
-                return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
-            }
-
-            let data = req.into_body().collect().await?;
-            // parse event
-            let event: Event = serde_json::from_slice(&req.into_body()).map_err(|e| {
-                mk_resp(
-                    StatusCode::BAD_REQUEST,
-                    Some(format!("invalid data: {}", e)),
-                )
-            })?;
-
-            let (tx, rx) = oneshot::channel();
-            event_tx.send((event, tx)).await.unwrap();
-            // acquire response
-            let actions = rx.await.unwrap();
-            if actions.len() > 0 {
-                let json = serde_json::to_vec(&actions).map_err(|e| {
+            } else if let Some(query) = req.uri().query() {
+                let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
                     mk_resp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Some(format!("error while serializing actions: {}", e)),
+                        StatusCode::BAD_REQUEST,
+                        Some(format!("invalid request query: {}", e)),
                     )
                 })?;
-                Ok(mk_resp(StatusCode::OK, Some(json)))
-            } else {
-                Ok(mk_resp(StatusCode::NO_CONTENT, None::<Bytes>))
+                if params.access_token == query_token {
+                    passed = true;
+                }
             }
-        })
+        }
+
+        if !passed {
+            return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
+        }
+
+        let data = req.into_body().collect().await.map_err(|e| {
+            mk_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some(format!("http body err: {e}")),
+            )
+        })?;
+
+        // parse event
+        let event: Event = serde_json::from_slice(&data.to_bytes()).map_err(|e| {
+            mk_resp(
+                StatusCode::BAD_REQUEST,
+                Some(format!("invalid data: {}", e)),
+            )
+        })?;
+
+        let (tx, rx) = oneshot::channel();
+        event_tx.send((event, tx)).unwrap();
+        // acquire response
+        let actions = rx.await.unwrap();
+        if actions.len() > 0 {
+            let json = serde_json::to_vec(&actions).map_err(|e| {
+                mk_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Some(format!("error while serializing actions: {}", e)),
+                )
+            })?;
+            Ok(mk_resp(StatusCode::OK, Some(json)))
+        } else {
+            Ok(mk_resp(StatusCode::NO_CONTENT, None::<Bytes>))
+        }
     }
 }
 
 type ActionsMap = FxHashMap<String, ActionsTx>;
 pub struct WebhookConnect {
-    access_token: Option<String>,
+    config: WebhookConfig,
     addr: SocketAddr,
 }
 impl WebhookConnect {
     pub fn new(addr: impl Into<SocketAddr>) -> Self {
         Self {
-            access_token: None,
+            config: Default::default(),
             addr: addr.into(),
         }
+    }
+
+    async fn service(
+        serv: WebhookServer,
+        req: Req,
+    ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
+        Ok(serv.handle_req(req).await.unwrap_or_else(|e| e))
     }
 
     async fn server_task(
         addr: SocketAddr,
         event_tx: EventCallTx,
-        access_token: Option<impl Into<String>>,
+        config: WebhookConfig,
     ) -> Result<(), AllErr> {
         let listener = TcpListener::bind(addr).await?;
 
-        let mut serv = WebhookServer::new(event_tx);
-        if let Some(access_token) = access_token {
-            serv.with_authorization(access_token);
-        }
+        let serv = WebhookServer::new(event_tx, config);
 
         loop {
             let (tcp, _) = listener.accept().await?;
             let io = TokioIo::new(tcp);
 
-            let serv_clone = serv.clone();
+            let serv = serv.clone();
             tokio::task::spawn(async move {
-                if let Err(err) = http1::Builder::new().serve_connection(io, serv_clone).await {
+                if let Err(err) = http1::Builder::new()
+                    .serve_connection(io, service_fn(|r| Self::service(serv.clone(), r)))
+                    .await
+                {
                     println!("Failed to serve connection: {:?}", err);
                 }
             });
@@ -158,12 +162,11 @@ impl WebhookConnect {
     }
 
     async fn manage_task(
-        mut event_rx: mpsc::Receiver<(Event, ActionsTx)>,
-        msg_tx: mpsc::Sender<RecvMessage>,
-        mut cmd_rx: mpsc::Receiver<Command>,
+        mut event_rx: mpsc::UnboundedReceiver<(Event, ActionsTx)>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Result<(), crate::Error> {
         let mut actions_map = ActionsMap::default();
-
         loop {
             tokio::select! {
                 result = event_rx.recv() => {
@@ -172,7 +175,6 @@ impl WebhookConnect {
 
                         msg_tx
                             .send(RecvMessage::Event(event))
-                            .await
                             .map_err(|_| AllErr::ChannelClosed)?
                     } else {
                         break
@@ -233,23 +235,34 @@ impl Connect for WebhookConnect {
     type Source = RxMessageSource;
 
     async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        todo!()
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+
+        tokio::spawn(Self::manage_task(event_rx, msg_tx.clone(), cmd_rx));
+        tokio::spawn(Self::server_task(self.addr, event_tx, self.config));
+
+        Ok((
+            RxMessageSource::new(msg_rx),
+            WebhookClientProvider::new(cmd_tx),
+            (),
+        ))
     }
 
-    fn with_authorization(self, access_token: impl Into<String>) -> Self {
-        Self {
-            access_token: Some(access_token.into()),
-        }
+    fn with_authorization(mut self, access_token: impl Into<String>) -> Self {
+        let token = access_token.into();
+        self.config.authorization = Some((format!("Bearer {}", token), token));
+        self
     }
 }
 
 pub struct WebhookClient {
     event_id: String,
-    cmd_tx: mpsc::Sender<Command>,
+    cmd_tx: mpsc::UnboundedSender<Command>,
     actions: Arc<Mutex<Vec<ActionArgs>>>,
 }
 impl WebhookClient {
-    pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::Sender<Command>) -> Self {
+    pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             event_id: event_id.into(),
             cmd_tx,
@@ -278,17 +291,16 @@ impl Client for WebhookClient {
         let actions = std::mem::take(&mut *self.actions.lock());
         self.cmd_tx
             .send(Command::Respond(self.event_id, actions))
-            .await
             .map_err(OCError::closed)
     }
 }
 
 pub struct WebhookClientProvider {
     event_id: Option<String>,
-    cmd_tx: mpsc::Sender<Command>,
+    cmd_tx: mpsc::UnboundedSender<Command>,
 }
 impl WebhookClientProvider {
-    pub fn new(cmd_tx: mpsc::Sender<Command>) -> Self {
+    pub fn new(cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             event_id: None,
             cmd_tx,

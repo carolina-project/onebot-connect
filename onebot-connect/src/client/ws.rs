@@ -95,8 +95,8 @@ pub(crate) struct WSTaskHandle {
 
 /// Wrapper for `RxMessageSource` and `TxClient`
 pub(crate) struct WSConnectionHandle {
-    pub msg_rx: mpsc::Receiver<RecvMessage>,
-    pub cmd_tx: mpsc::Sender<Command>,
+    pub msg_rx: mpsc::UnboundedReceiver<RecvMessage>,
+    pub cmd_tx: mpsc::UnboundedSender<Command>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -121,16 +121,16 @@ impl WSTaskHandle {
     where
         T: WsStream,
     {
-        let (msg_tx, msg_rx) = mpsc::channel(8);
-        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
         let (write, read) = ws.split();
 
-        let (signal_tx_recv, signal_rx_recv) = mpsc::channel(4);
-        let (signal_tx_send, signal_rx_send) = mpsc::channel(4);
+        let (signal_tx_recv, signal_rx_recv) = mpsc::unbounded_channel();
+        let (signal_tx_send, signal_rx_send) = mpsc::unbounded_channel();
 
-        let (recv_data_tx, recv_data_rx) = mpsc::channel(8);
-        let (action_tx, action_rx) = mpsc::channel(8);
+        let (recv_data_tx, recv_data_rx) = mpsc::unbounded_channel();
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
 
         let recv_handle = tokio::spawn(Self::recv_task(read, recv_data_tx, signal_rx_recv));
         let send_handle = tokio::spawn(Self::send_task(write, action_rx, signal_rx_send));
@@ -156,13 +156,10 @@ impl WSTaskHandle {
     async fn handle_action(
         args: ActionArgs,
         map: &mut ActionMap,
-        action_tx: &mpsc::Sender<Vec<u8>>,
+        action_tx: &mpsc::UnboundedSender<Vec<u8>>,
         responder: ActionResponder,
     ) {
-        let ActionArgs {
-            action,
-            self_,
-        } = args;
+        let ActionArgs { action, self_ } = args;
         let echo = generate_echo(8, &map);
 
         let res = serde_json::to_vec(&ob12::action::Action {
@@ -173,7 +170,7 @@ impl WSTaskHandle {
         match res {
             Ok(data) => {
                 map.insert(echo, responder);
-                action_tx.send(data).await.unwrap();
+                action_tx.send(data).unwrap();
             }
             Err(e) => {
                 responder.send(Err(OCError::other(e))).unwrap();
@@ -183,20 +180,14 @@ impl WSTaskHandle {
 
     #[inline(always)]
     async fn handle_close(
-        signal_tx_send: &mpsc::Sender<Signal>,
-        signal_tx_recv: &mpsc::Sender<Signal>,
+        signal_tx_send: &mpsc::UnboundedSender<Signal>,
+        signal_tx_recv: &mpsc::UnboundedSender<Signal>,
         tx: oneshot::Sender<Result<ClosedReason, String>>,
     ) {
         let (close_tx_recv, close_rx_recv) = oneshot::channel();
         let (close_tx_send, close_rx_send) = oneshot::channel();
-        signal_tx_recv
-            .send(Signal::Close(close_tx_recv))
-            .await
-            .unwrap();
-        signal_tx_send
-            .send(Signal::Close(close_tx_send))
-            .await
-            .unwrap();
+        signal_tx_recv.send(Signal::Close(close_tx_recv)).unwrap();
+        signal_tx_send.send(Signal::Close(close_tx_send)).unwrap();
 
         let (recv_result, send_result) =
             (close_rx_recv.await.unwrap(), close_rx_send.await.unwrap());
@@ -226,9 +217,9 @@ impl WSTaskHandle {
     async fn handle_command(
         command: Command,
         action_map: &mut ActionMap,
-        action_tx: &mpsc::Sender<Vec<u8>>,
-        signal_tx_send: &mpsc::Sender<Signal>,
-        signal_tx_recv: &mpsc::Sender<Signal>,
+        action_tx: &mpsc::UnboundedSender<Vec<u8>>,
+        signal_tx_send: &mpsc::UnboundedSender<Signal>,
+        signal_tx_recv: &mpsc::UnboundedSender<Signal>,
     ) {
         match command {
             Command::Action(args, responder) => {
@@ -244,12 +235,12 @@ impl WSTaskHandle {
     }
 
     async fn manage_task(
-        msg_tx: mpsc::Sender<RecvMessage>,
-        mut cmd_rx: mpsc::Receiver<Command>,
-        signal_tx_recv: mpsc::Sender<Signal>,
-        signal_tx_send: mpsc::Sender<Signal>,
-        mut recv_data_rx: mpsc::Receiver<RecvData>,
-        action_tx: mpsc::Sender<Vec<u8>>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
+        signal_tx_recv: mpsc::UnboundedSender<Signal>,
+        signal_tx_send: mpsc::UnboundedSender<Signal>,
+        mut recv_data_rx: mpsc::UnboundedReceiver<RecvData>,
+        action_tx: mpsc::UnboundedSender<Vec<u8>>,
     ) -> Result<(), crate::Error> {
         let mut action_map = ActionMap::default();
         loop {
@@ -273,7 +264,7 @@ impl WSTaskHandle {
 
                     match data {
                         RecvData::Event(event) => {
-                            msg_tx.send(RecvMessage::Event(event)).await.unwrap()
+                            msg_tx.send(RecvMessage::Event(event)).unwrap()
                         },
                         RecvData::Response((resp, echo)) => {
                             if let Some(resp_tx) = action_map.remove(&echo) {
@@ -292,8 +283,8 @@ impl WSTaskHandle {
 
     async fn send_task<T>(
         mut stream: SplitSink<WebSocketStream<T>, tokio_tungstenite::tungstenite::Message>,
-        mut action_rx: mpsc::Receiver<Vec<u8>>,
-        mut signal_rx: mpsc::Receiver<Signal>,
+        mut action_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        mut signal_rx: mpsc::UnboundedReceiver<Signal>,
     ) -> Result<(), crate::Error>
     where
         T: WsStream,
@@ -345,8 +336,8 @@ impl WSTaskHandle {
 
     async fn recv_task<T>(
         mut stream: SplitStream<WebSocketStream<T>>,
-        data_tx: mpsc::Sender<RecvData>,
-        mut signal_rx: mpsc::Receiver<Signal>,
+        data_tx: mpsc::UnboundedSender<RecvData>,
+        mut signal_rx: mpsc::UnboundedReceiver<Signal>,
     ) -> Result<(), crate::Error>
     where
         T: WsStream,
@@ -361,7 +352,7 @@ impl WSTaskHandle {
                     match data {
                         Ok(msg) => match Self::parse_data(msg.into()) {
                             Ok(data) => {
-                                data_tx.send(data).await.unwrap();
+                                data_tx.send(data).unwrap();
                             }
                             Err(e) => {
                                 log::error!("error occurred while parsing ws data: {}", e)

@@ -37,11 +37,11 @@ pub fn generate_echo(len: usize, map: &ActionMap) -> String {
 }
 
 pub struct RxMessageSource {
-    rx: mpsc::Receiver<RecvMessage>,
+    rx: mpsc::UnboundedReceiver<RecvMessage>,
 }
 
 impl RxMessageSource {
-    pub fn new(rx: mpsc::Receiver<RecvMessage>) -> Self {
+    pub fn new(rx: mpsc::UnboundedReceiver<RecvMessage>) -> Self {
         Self { rx }
     }
 }
@@ -55,10 +55,10 @@ impl MessageSource for RxMessageSource {
 }
 
 pub struct TxClientProvider {
-    tx: mpsc::Sender<Command>,
+    tx: mpsc::UnboundedSender<Command>,
 }
 impl TxClientProvider {
-    pub fn new(tx: mpsc::Sender<Command>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
         Self { tx }
     }
 }
@@ -71,10 +71,10 @@ impl ClientProvider for TxClientProvider {
 }
 
 pub struct TxClient {
-    tx: mpsc::Sender<Command>,
+    tx: mpsc::UnboundedSender<Command>,
 }
 impl TxClient {
-    pub fn new(tx: mpsc::Sender<Command>) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<Command>) -> Self {
         Self { tx }
     }
 }
@@ -87,7 +87,6 @@ impl Client for TxClient {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::Action(ActionArgs { action, self_ }, tx))
-            .await
             .map_err(OCError::closed)?;
         rx.await.unwrap().map(|r| Some(r))
     }
@@ -99,7 +98,6 @@ impl Client for TxClient {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::GetConfig(key.into(), tx))
-            .await
             .map_err(OCError::closed)?;
 
         rx.await.map_err(OCError::closed)
@@ -112,7 +110,7 @@ impl Client for TxClient {
     ) -> Result<(), OCError> {
         let (tx, rx) = oneshot::channel();
         let entry = (key.into(), value);
-        self.tx.send(Command::SetConfig(entry, tx)).await.unwrap();
+        self.tx.send(Command::SetConfig(entry, tx)).unwrap();
         Ok(rx.await.map_err(OCError::closed)??)
     }
 }
