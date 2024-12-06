@@ -1,12 +1,23 @@
 use std::error::Error as ErrTrait;
 
 use onebot_types::ob12::action::RespError;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "imp")]
 pub mod imp;
 
 #[cfg(feature = "app")]
 pub mod app;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum ClosedReason {
+    /// Closed successfully.
+    Ok,
+    /// Closed, but some error occurred.
+    Error(String),
+    /// Partially closed.
+    Partial(String),
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

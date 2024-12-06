@@ -12,22 +12,14 @@ use onebot_types::{
     },
 };
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ClosedReason {
-    /// Closed successfully.
-    Ok,
-    /// Closed, but some error occurred.
-    Error(String),
-    /// Partially closed.
-    Partial(String),
-}
-
 #[cfg(feature = "app_recv")]
 mod recv {
     use std::fmt::Debug;
 
     use onebot_types::ob12::event::Event;
     use tokio::sync::oneshot;
+
+    use crate::ClosedReason;
 
     use super::*;
 
@@ -66,6 +58,20 @@ mod recv {
     /// Receiver for messages from OneBot Connect
     pub trait MessageSource {
         fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
+    }
+
+    pub trait MessageSourceDyn {
+        fn poll_message(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Option<RecvMessage>> + Send + '_>>;
+    }
+
+    impl<T: MessageSource> MessageSourceDyn for T {
+        fn poll_message(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Option<RecvMessage>> + Send + '_>> {
+            Box::pin(self.poll_message())
+        }
     }
 
     /// OneBot app side provider
@@ -188,13 +194,12 @@ impl<T: App> AppDyn for T {
     }
 
     fn set_config<'a, 'b: 'a>(
-            &'a self,
-            key: &'b str,
-            value: Value,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
+        &'a self,
+        key: &'b str,
+        value: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
         Box::pin(self.set_config(key, value))
     }
-
 
     fn send_action_dyn(
         &self,

@@ -4,8 +4,7 @@ use futures_util::{
 };
 use http::{header::AUTHORIZATION, HeaderValue};
 use onebot_connect_interface::{
-    app::{ActionArgs, ActionResponder, ClosedReason, Command, Connect, RecvMessage},
-    ConfigError, Error as OCError,
+    app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage}, ClosedReason, ConfigError, Error as OCError
 };
 use onebot_types::ob12::{self, event::Event};
 use serde_json::Value as Json;

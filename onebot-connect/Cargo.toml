@@ -40,8 +40,8 @@ http-body = { version = "1", optional = true }
 
 [features]
 default = []
-app = []
-imp = []
+app = ["onebot-connect-interface/app"]
+imp = ["onebot-connect-interface/imp"]
 hyper = ["dep:hyper", "dep:http", "dep:http-body-util", "dep:hyper-util"]
 ws = ["tokio-tungstenite", "dep:http"]
 http = ["reqwest", "hyper"]
