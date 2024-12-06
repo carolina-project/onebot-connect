@@ -141,11 +141,11 @@ pub trait App {
         async move { Err(ConfigError::UnknownKey(key.into()).into()) }
     }
 
+    /// Clone app client for multi-thread usage.
+    fn clone_app(&self) -> Self;
+
     /// App client releasing logic, such as sending actions stored.
-    fn release(self) -> impl Future<Output = Result<(), Error>> + Send + 'static
-    where
-        Self: Sized,
-    {
+    fn release(&mut self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
         async { Ok(()) }
     }
 }
@@ -167,21 +167,20 @@ pub trait AppDyn {
         key: &'b str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
 
+    fn clone_app(&self) -> Box<dyn AppDyn + 'static>;
+
     fn set_config<'a, 'b: 'a>(
         &'a self,
         key: &'b str,
         value: Value,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 
-    fn release(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
-    where
-        Self: Sized,
-    {
+    fn release(&mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 }
 
-impl<T: App> AppDyn for T {
+impl<T: App + 'static> AppDyn for T {
     fn response_supported(&self) -> bool {
         self.response_supported()
     }
@@ -209,7 +208,11 @@ impl<T: App> AppDyn for T {
         Box::pin(self.send_action_impl(action, self_))
     }
 
-    fn release(self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>> {
+    fn clone_app(&self) -> Box<dyn AppDyn + 'static> {
+        Box::new(self.clone_app())
+    }
+
+    fn release(&mut self) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
         Box::pin(self.release())
     }
 }

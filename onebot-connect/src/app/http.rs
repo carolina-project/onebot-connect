@@ -63,14 +63,24 @@ impl MessageSource for HttpMessageSource {
     }
 }
 
-pub struct HttpApp {
+struct HttpAppInner {
     http: reqwest::Client,
-    url: Arc<String>,
+    url: String,
 }
 
-impl HttpApp {
-    pub fn new(conn: reqwest::Client, url: Arc<String>) -> Self {
-        Self { http: conn, url }
+#[derive(Clone)]
+pub struct HttpApp {
+    inner: Arc<HttpAppInner>,
+}
+
+impl<T> From<T> for HttpApp
+where
+    T: Into<Arc<HttpAppInner>>,
+{
+    fn from(value: T) -> Self {
+        Self {
+            inner: value.into(),
+        }
     }
 }
 
@@ -81,8 +91,9 @@ impl App for HttpApp {
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<Value>, OCError> {
         let http_resp = self
+            .inner
             .http
-            .post(self.url.as_ref())
+            .post(&self.inner.url)
             .json(&Action {
                 action,
                 echo: None,
@@ -107,23 +118,32 @@ impl App for HttpApp {
             }
         }
     }
+
+    fn clone_app(&self) -> Self {
+        self.clone()
+    }
 }
 
 pub struct HttpAppProvider {
-    http: reqwest::Client,
-    url: Arc<String>,
+    app_inner: Arc<HttpAppInner>,
 }
 
 impl HttpAppProvider {
-    pub fn new(http: reqwest::Client, url: Arc<String>) -> Self {
-        Self { http, url }
+    pub fn new(http: reqwest::Client, url: impl Into<String>) -> Self {
+        Self {
+            app_inner: HttpAppInner {
+                http,
+                url: url.into(),
+            }
+            .into(),
+        }
     }
 }
 impl AppProvider for HttpAppProvider {
     type Output = HttpApp;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        Ok(HttpApp::new(self.http.clone(), self.url.clone()))
+        Ok(HttpApp::from(self.app_inner.clone()))
     }
 }
 
@@ -165,7 +185,7 @@ impl Connect for HttpConnect {
         let http = reqwest::ClientBuilder::new()
             .default_headers(headers)
             .build()?;
-        let mut provider = HttpAppProvider::new(http, Arc::new(self.url));
+        let mut provider = HttpAppProvider::new(http, self.url);
         Ok((HttpMessageSource::new(provider.provide()?), provider, ()))
     }
 }

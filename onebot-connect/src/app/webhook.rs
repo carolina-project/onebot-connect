@@ -1,14 +1,15 @@
 use super::*;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{
-    header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode,
-};
+use hyper::{header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 extern crate http as http_lib;
 
-use crate::{common::http::{mk_resp, Req, ReqQuery, Response}, Authorization, Error as AllErr};
+use crate::{
+    common::http::{mk_resp, Req, ReqQuery, Response},
+    Authorization, Error as AllErr,
+};
 
 use onebot_connect_interface::{app::Connect, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
@@ -32,7 +33,6 @@ pub struct WebhookServer {
     /// Event transmitter channel, send event and its callback(actions)
     event_tx: EventCallTx,
 }
-
 
 impl WebhookServer {
     pub fn new(event_tx: EventCallTx, config: WebhookConfig) -> Self {
@@ -239,17 +239,26 @@ impl Connect for WebhookConnect {
     }
 }
 
-pub struct WebhookApp {
+pub struct WebhookAppInner {
     event_id: String,
+    actions: Mutex<Vec<ActionArgs>>,
+}
+
+pub struct WebhookApp {
+    is_owner: bool,
+    inner: Arc<WebhookAppInner>,
     cmd_tx: mpsc::UnboundedSender<Command>,
-    actions: Arc<Mutex<Vec<ActionArgs>>>,
 }
 impl WebhookApp {
     pub fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
-            event_id: event_id.into(),
+            is_owner: true,
+            inner: WebhookAppInner {
+                event_id: event_id.into(),
+                actions: Default::default(),
+            }
+            .into(),
             cmd_tx,
-            actions: Default::default(),
         }
     }
 }
@@ -263,18 +272,29 @@ impl App for WebhookApp {
         action: onebot_types::ob12::action::ActionType,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCError> {
-        self.actions.lock().push(ActionArgs { action, self_ });
+        self.inner.actions.lock().push(ActionArgs { action, self_ });
         Ok(None)
     }
 
-    async fn release(self) -> Result<(), OCError>
-    where
-        Self: Sized,
-    {
-        let actions = std::mem::take(&mut *self.actions.lock());
-        self.cmd_tx
-            .send(Command::Respond(self.event_id, actions))
-            .map_err(OCError::closed)
+    fn clone_app(&self) -> Self {
+        Self {
+            is_owner: false,
+            inner: self.inner.clone(),
+            cmd_tx: self.cmd_tx.clone(),
+        }
+    }
+
+    async fn release(&mut self) -> Result<(), OCError> {
+        if self.is_owner {
+            let actions = std::mem::take(&mut *self.inner.actions.lock());
+            self.cmd_tx
+                .send(Command::Respond(self.inner.event_id.clone(), actions))
+                .map_err(OCError::closed)
+        } else {
+            Err(OCError::not_supported(
+                "`release` not supported for non-owner",
+            ))
+        }
     }
 }
 

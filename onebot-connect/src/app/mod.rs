@@ -73,6 +73,7 @@ impl AppProvider for TxAppProvider {
     }
 }
 
+#[derive(Clone)]
 pub struct TxAppSide {
     tx: mpsc::UnboundedSender<Command>,
 }
@@ -115,5 +116,9 @@ impl App for TxAppSide {
         let entry = (key.into(), value);
         self.tx.send(Command::SetConfig(entry, tx)).unwrap();
         Ok(rx.await.map_err(OCError::closed)??)
+    }
+
+    fn clone_app(&self) -> Self {
+        self.clone()
     }
 }
