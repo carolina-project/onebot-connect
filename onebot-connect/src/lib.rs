@@ -2,8 +2,8 @@ use std::io;
 
 #[cfg(feature = "client")]
 pub mod client;
-
-use std::error::Error as ErrTrait;
+#[cfg(feature = "server")]
+pub mod server;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -25,5 +25,3 @@ pub enum Error {
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
 }
-
-impl Error {}

@@ -7,7 +7,10 @@ use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
 
 pub mod compat;
+
+#[cfg(feature = "http")]
 pub mod http;
+#[cfg(feature = "http")]
 pub mod webhook;
 
 #[cfg(feature = "ws")]

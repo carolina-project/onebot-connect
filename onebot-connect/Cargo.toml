@@ -41,6 +41,7 @@ http-body = { version = "1", optional = true }
 [features]
 default = []
 client = []
+server = []
 hyper = ["dep:hyper", "dep:http", "dep:http-body-util", "dep:hyper-util"]
 ws = ["tokio-tungstenite", "dep:http"]
 http = ["reqwest", "hyper"]
