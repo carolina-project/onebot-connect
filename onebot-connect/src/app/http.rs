@@ -152,10 +152,10 @@ pub struct HttpConnect {
     url: String,
 }
 impl HttpConnect {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: impl Into<String>) -> Self {
         Self {
             access_token: None,
-            url,
+            url: url.into(),
         }
     }
 }

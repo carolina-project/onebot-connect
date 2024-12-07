@@ -38,6 +38,24 @@ impl Impl for TxImpl {
     }
 }
 
+pub struct TxImplProvider {
+    tx: CmdSender,
+}
+impl TxImplProvider {
+    pub fn new(tx: CmdSender) -> Self {
+        Self { tx }
+    }
+}
+impl ImplProvider for TxImplProvider {
+    type Output = TxImpl;
+
+    fn provide(&mut self) -> Result<Self::Output, OCError> {
+        Ok(TxImpl {
+            tx: self.tx.clone(),
+        })
+    }
+}
+
 pub struct RxMessageSource {
     rx: MessageRecv,
 }

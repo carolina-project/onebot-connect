@@ -118,13 +118,14 @@ impl<T: Impl + Send + 'static> ImplDyn for T {
 }
 
 pub trait Create {
+    type Error: std::error::Error;
     type Source: MessageSource;
     type Provider: ImplProvider;
     type Message: Debug;
 
     fn create(
         self,
-    ) -> impl Future<Output = Result<(Self::Source, Self::Provider, Self::Message), Error>> + Send;
+    ) -> impl Future<Output = Result<(Self::Source, Self::Provider, Self::Message), Self::Error>>;
 
-    fn with_authorization(self, access_token: String) -> Self;
+    fn with_authorization(self, access_token: impl Into<String>) -> Self;
 }

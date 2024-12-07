@@ -22,7 +22,7 @@ use tokio_tungstenite::{
 
 pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-use crate::app::generate_echo;
+use crate::{app::generate_echo, RecvError};
 
 use super::{ActionMap, RxMessageSource, TxAppProvider};
 
@@ -98,19 +98,6 @@ pub(crate) struct WSConnectionHandle {
     pub cmd_tx: mpsc::UnboundedSender<Command>,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum RecvError {
-    #[error(transparent)]
-    SerdeJson(#[from] serde_json::Error),
-    #[error("invalid data type: {0}")]
-    InvalidData(String),
-}
-
-impl RecvError {
-    pub fn invalid_data(msg: impl AsRef<str>) -> RecvError {
-        Self::InvalidData(msg.as_ref().to_owned())
-    }
-}
 
 pub(crate) trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}

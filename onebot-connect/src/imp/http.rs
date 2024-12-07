@@ -243,11 +243,12 @@ impl HttpCreate {
 }
 
 impl Create for HttpCreate {
+    type Error = OCError;
     type Source = RxMessageSource;
     type Provider = HttpImplProvider;
     type Message = ();
 
-    async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), OCError> {
+    async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (resp_tx, resp_rx) = mpsc::unbounded_channel();
@@ -262,7 +263,7 @@ impl Create for HttpCreate {
         ))
     }
 
-    fn with_authorization(mut self, access_token: String) -> Self {
+    fn with_authorization(mut self, access_token: impl Into<String>) -> Self {
         let token = access_token.into();
         self.config.authorization = Some((format!("Bearer {}", token), token));
         self

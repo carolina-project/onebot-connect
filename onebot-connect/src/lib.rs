@@ -29,3 +29,17 @@ pub enum Error {
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
 }
+
+#[derive(thiserror::Error, Debug)]
+pub enum RecvError {
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
+    #[error("invalid data type: {0}")]
+    InvalidData(String),
+}
+
+impl RecvError {
+    pub fn invalid_data(msg: impl AsRef<str>) -> RecvError {
+        Self::InvalidData(msg.as_ref().to_owned())
+    }
+}

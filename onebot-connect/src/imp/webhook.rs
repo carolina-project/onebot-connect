@@ -36,12 +36,11 @@ impl WebhookCreate {
 
 impl Create for WebhookCreate {
     type Source = RxMessageSource;
-
+    type Error = OCError;
     type Provider = WebhookImplProvider;
-
     type Message = ();
 
-    async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), OCError> {
+    async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let mut headers = HeaderMap::new();
         if let Some(header) = self.auth_header {
             headers.insert(
@@ -75,8 +74,8 @@ impl Create for WebhookCreate {
         ))
     }
 
-    fn with_authorization(mut self, access_token: String) -> Self {
-        self.auth_header = Some(format!("Bearer {}", access_token));
+    fn with_authorization(mut self, access_token: impl Into<String>) -> Self {
+        self.auth_header = Some(format!("Bearer {}", access_token.into()));
         self
     }
 }
