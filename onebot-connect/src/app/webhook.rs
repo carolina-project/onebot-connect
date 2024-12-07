@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 extern crate http as http_lib;
 
 use crate::{
-    common::http::{mk_resp, Req, ReqQuery, Response},
+    common::http_s::{mk_resp, Req, ReqQuery, Response},
     Authorization, Error as AllErr,
 };
 

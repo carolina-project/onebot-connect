@@ -16,7 +16,7 @@ use serde_value::Value;
 use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::{
-    common::http::{mk_resp, Req, ReqQuery},
+    common::http_s::{mk_resp, Req, ReqQuery},
     Authorization,
 };
 
@@ -126,7 +126,7 @@ impl HttpCreate {
 
     async fn server_task(
         addr: SocketAddr,
-        action_tx: ActionRespTx,
+        resp_tx: ActionRespTx,
         config: HttpConfig,
     ) -> Result<(), AllErr> {
         async fn service(
@@ -137,7 +137,7 @@ impl HttpCreate {
         }
 
         let listener = TcpListener::bind(addr).await?;
-        let serv = HttpServer::new(action_tx, config);
+        let serv = HttpServer::new(resp_tx, config);
         loop {
             let (tcp, _) = listener.accept().await?;
             let io = TokioIo::new(tcp);
@@ -155,7 +155,7 @@ impl HttpCreate {
     }
 
     async fn manage_task(
-        mut action_rx: ActionRespRx,
+        mut resp_rx: ActionRespRx,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Result<(), crate::Error> {
@@ -175,7 +175,7 @@ impl HttpCreate {
 
         loop {
             tokio::select! {
-                result = action_rx.recv() => {
+                result = resp_rx.recv() => {
                     if let Some((action, resp_tx)) = result {
                         resp_map.insert(random_echo(&resp_map), resp_tx);
 
