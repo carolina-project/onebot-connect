@@ -1,24 +1,22 @@
-use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 
-use bytes::Bytes;
 use fxhash::FxHashMap;
-use http_body_util::{BodyExt, Full};
-use hyper::{header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode};
-use hyper_util::rt::TokioIo;
 use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
 use onebot_types::ob12::{
     self,
     action::{RespData, RespStatus, RetCode},
 };
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
 use serde_value::Value;
-use tokio::{net::TcpListener, sync::oneshot};
+use tokio::sync::oneshot;
 
-use crate::{
-    common::http_s::{mk_resp, Req, ReqQuery},
-    Authorization,
-};
+use crate::
+    common::{
+        http_s::{HttpConfig, HttpServerTask},
+        CloseHandler, CmdHandler, RecvHandler,
+    }
+;
 
 extern crate http as http_lib;
 
@@ -27,187 +25,33 @@ use crate::Error as AllErr;
 
 type EventQueue = Arc<Mutex<VecDeque<Event>>>;
 
-#[derive(Debug, Clone, Default)]
-pub struct HttpConfig {
-    authorization: Authorization,
-}
-
-type HttpConfShared = Arc<RwLock<HttpConfig>>;
-
-type ActionResponder = oneshot::Sender<RespData>;
-type ActionRespTx = mpsc::UnboundedSender<(ImpAction, ActionResponder)>;
-type ActionRespRx = mpsc::UnboundedReceiver<(ImpAction, ActionResponder)>;
-type Response = hyper::Response<Full<Bytes>>;
-
-#[derive(Clone)]
-pub struct HttpServer {
-    config: HttpConfShared,
-    /// Event transmitter channel, send event and its callback(actions)
-    action_tx: ActionRespTx,
-}
-
-impl HttpServer {
-    pub fn new(action_tx: ActionRespTx, config: HttpConfig) -> Self {
-        Self {
-            config: Arc::new(RwLock::new(config)),
-            action_tx,
-        }
-    }
-
-    async fn handle_req(self, req: Req) -> Result<Response, Response> {
-        let Self { config, action_tx } = self;
-        // check access token
-        let mut passed = false;
-        if let Some((header_token, query_token)) = &config.read().authorization {
-            if let Some(header) = req.headers().get(AUTHORIZATION) {
-                if header == header_token {
-                    passed = true;
-                }
-            } else if let Some(query) = req.uri().query() {
-                let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
-                    mk_resp(
-                        StatusCode::BAD_REQUEST,
-                        Some(format!("invalid request query: {}", e)),
-                    )
-                })?;
-                if params.access_token == query_token {
-                    passed = true;
-                }
-            }
-        }
-
-        if !passed {
-            return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
-        }
-
-        let data = req.into_body().collect().await.map_err(|e| {
-            mk_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(format!("http body err: {e}")),
-            )
-        })?;
-
-        // parse action
-        let action: Action = serde_json::from_slice(&data.to_bytes()).map_err(|e| {
-            mk_resp(
-                StatusCode::BAD_REQUEST,
-                Some(format!("invalid data: {}", e)),
-            )
-        })?;
-
-        let (tx, rx) = oneshot::channel();
-        action_tx.send((action, tx)).unwrap();
-        // acquire response
-        let resp = serde_json::to_vec(&rx.await.unwrap()).map_err(|e| {
-            mk_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(format!("error while serializing response: {}", e)),
-            )
-        })?;
-
-        Ok(mk_resp(StatusCode::OK, Some(resp)))
-    }
-}
-
-pub struct HttpCreate {
-    config: HttpConfig,
-    addr: SocketAddr,
-}
-
 type RespMap = FxHashMap<ActionEcho, oneshot::Sender<RespData>>;
+type ActionResponder = oneshot::Sender<RespData>;
+type ActionRecv = (ImpAction, ActionResponder);
+type ActionRespRx = mpsc::UnboundedReceiver<(ImpAction, ActionResponder)>;
 
-impl HttpCreate {
-    pub fn new(addr: impl Into<SocketAddr>) -> Self {
-        Self {
-            config: Default::default(),
-            addr: addr.into(),
-        }
-    }
-
-    async fn server_task(
-        addr: SocketAddr,
-        resp_tx: ActionRespTx,
-        config: HttpConfig,
-    ) -> Result<(), AllErr> {
-        async fn service(
-            serv: HttpServer,
-            req: Req,
-        ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-            Ok(serv.handle_req(req).await.unwrap_or_else(|e| e))
-        }
-
-        let listener = TcpListener::bind(addr).await?;
-        let serv = HttpServer::new(resp_tx, config);
-        loop {
-            let (tcp, _) = listener.accept().await?;
-            let io = TokioIo::new(tcp);
-
-            let serv = serv.clone();
-            tokio::task::spawn(async move {
-                if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(|r| service(serv.clone(), r)))
-                    .await
-                {
-                    println!("Failed to serve connection: {:?}", err);
-                }
-            });
-        }
-    }
-
-    async fn manage_task(
-        mut resp_rx: ActionRespRx,
+#[derive(Default)]
+struct HttpHandler {
+    resp_map: RespMap,
+}
+impl CmdHandler<Command, RecvMessage> for HttpHandler {
+    async fn handle_cmd(
+        &mut self,
+        cmd: Command,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
-        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
+        state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
-        let mut resp_map = RespMap::default();
-
-        fn random_echo(map: &RespMap) -> ActionEcho {
-            let mut rand = thread_rng();
-            loop {
-                let echo = ActionEcho::Inner(rand.gen());
-                if !map.contains_key(&echo) {
-                    break echo;
-                } else {
-                    continue;
-                }
-            }
-        }
-
-        loop {
-            tokio::select! {
-                result = resp_rx.recv() => {
-                    if let Some((action, resp_tx)) = result {
-                        resp_map.insert(random_echo(&resp_map), resp_tx);
-
-                        msg_tx
-                            .send(RecvMessage::Action(action))
-                            .map_err(|_| AllErr::ChannelClosed)?
-                    } else {
-                        break
-                    }
-                }
-                cmd = cmd_rx.recv() => {
-                    if let Some(cmd) = cmd {
-                        Self::handle_cmd(cmd, &mut resp_map).await?;
-                    } else {
-                        break
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_cmd(cmd: Command, actions_map: &mut RespMap) -> Result<(), AllErr> {
         match cmd {
             Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
             Command::SetConfig((key, _), tx) => tx
                 .send(Err(ConfigError::UnknownKey(key)))
                 .map_err(|_| AllErr::ChannelClosed),
-            Command::Close(_) => todo!(),
+            Command::Close => {
+                state.set_active(false);
+                Ok(())
+            }
             Command::Respond(echo, response) => {
-                if let Some(responder) = actions_map.remove(&echo) {
+                if let Some(responder) = self.resp_map.remove(&echo) {
                     let echo = match echo {
                         ActionEcho::Inner(_) => None,
                         ActionEcho::Outer(s) => Some(s),
@@ -241,6 +85,57 @@ impl HttpCreate {
         }
     }
 }
+impl RecvHandler<ActionRecv, RecvMessage> for HttpHandler {
+    async fn handle_recv(
+        &mut self,
+        recv: ActionRecv,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        _state: crate::common::ConnState,
+    ) -> Result<(), crate::Error> {
+        fn random_echo(map: &RespMap) -> ActionEcho {
+            let mut rand = thread_rng();
+            loop {
+                let echo = ActionEcho::Inner(rand.gen());
+                if !map.contains_key(&echo) {
+                    break echo;
+                } else {
+                    continue;
+                }
+            }
+        }
+        let (action, resp_tx) = recv;
+        self.resp_map.insert(random_echo(&self.resp_map), resp_tx);
+
+        msg_tx
+            .send(RecvMessage::Action(action))
+            .map_err(|_| AllErr::ChannelClosed)
+    }
+}
+impl CloseHandler<RecvMessage> for HttpHandler {
+    async fn handle_close(
+        &mut self,
+        result: Result<onebot_connect_interface::ClosedReason, String>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+    ) -> Result<(), crate::Error> {
+        Ok(msg_tx
+            .send(RecvMessage::Close(result))
+            .map_err(OCError::closed)?)
+    }
+}
+
+pub struct HttpCreate {
+    config: HttpConfig,
+    addr: SocketAddr,
+}
+
+impl HttpCreate {
+    pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        Self {
+            config: Default::default(),
+            addr: addr.into(),
+        }
+    }
+}
 
 impl Create for HttpCreate {
     type Error = OCError;
@@ -249,12 +144,8 @@ impl Create for HttpCreate {
     type Message = ();
 
     async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (resp_tx, resp_rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(Self::manage_task(resp_rx, msg_tx.clone(), cmd_rx));
-        tokio::spawn(Self::server_task(self.addr, resp_tx, self.config));
+        let (cmd_tx, msg_rx) =
+            HttpServerTask::create(self.addr, self.config, HttpHandler::default()).await;
 
         Ok((
             RxMessageSource::new(msg_rx),

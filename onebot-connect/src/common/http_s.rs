@@ -17,6 +17,7 @@ use crate::Error as AllErr;
 
 use super::*;
 
+/// auth header and query param
 type Authorization = Option<(String, String)>;
 pub(crate) type Response = hyper::Response<Full<Bytes>>;
 pub(crate) type Req = http::Request<Incoming>;
@@ -34,9 +35,21 @@ pub(crate) struct ReqQuery<'a> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct HttpConfig {
-    authorization: Authorization,
+pub(crate) struct HttpConfig {
+    pub authorization: Authorization,
 }
+
+impl HttpConfig {
+    fn new<S: Into<String>>(access_token: Option<S>) -> Self {
+        Self {
+            authorization: access_token.map(|r| {
+                let token: String = r.into();
+                (format!("Bearer {}", token), token)
+            }),
+        }
+    }
+}
+
 type HttpConfShared = Arc<RwLock<HttpConfig>>;
 
 struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
@@ -120,31 +133,46 @@ impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpSe
     }
 }
 
-pub(crate) struct HttpServerTask<Body, Resp, Cmd, Msg, CHandler, RHandler>
-where
-    CHandler: CmdHandler<Cmd, Msg>,
-    Body: DeserializeOwned + Send + 'static,
-    Resp: Serialize + Send + 'static,
-    RHandler: RecvHandler<(Body, oneshot::Sender<Resp>), Msg>,
+pub(crate) trait HttpTaskHandler<Body, Resp, Cmd, Msg>:
+    CmdHandler<Cmd, Msg>
+    + RecvHandler<(Body, oneshot::Sender<Resp>), Msg>
+    + CloseHandler<Msg>
+    + Send
+    + 'static
 {
-    _phantom: PhantomData<(CHandler, Body, Resp, RHandler, Msg, Cmd)>,
+}
+impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T where
+    T: CmdHandler<C, M>
+        + RecvHandler<(B, oneshot::Sender<R>), M>
+        + CloseHandler<M>
+        + Send
+        + 'static
+{
 }
 
-impl<B, R, C, M, CH, RH> HttpServerTask<B, R, C, M, CH, RH>
+pub(crate) struct HttpServerTask<Body, Resp, Cmd, Msg, Handler>
 where
-    CH: CmdHandler<C, M> + Send + 'static,
+    Body: DeserializeOwned + Send + 'static,
+    Resp: Serialize + Send + 'static,
+    Handler: HttpTaskHandler<Body, Resp, Cmd, Msg>,
+{
+    _phantom: PhantomData<(Handler, Body, Resp, Msg, Cmd)>,
+}
+
+impl<B, R, C, M, H> HttpServerTask<B, R, C, M, H>
+where
+    H: HttpTaskHandler<B, R, C, M>,
     B: DeserializeOwned + Send + 'static,
     R: Serialize + Send + 'static,
-    RH: RecvHandler<(B, oneshot::Sender<R>), M> + Send + 'static,
     M: Send + 'static,
     C: Send + 'static,
 {
     pub async fn create(
         addr: impl Into<SocketAddr>,
         config: HttpConfig,
-        recv_handler: RH,
-        cmd_handler: CH,
-    ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>) {
+        handler: H,
+    ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>)
+    {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
@@ -157,12 +185,7 @@ where
             config.clone(),
         ));
         tokio::spawn(Self::manage_task(
-            body_rx,
-            msg_tx,
-            cmd_rx,
-            cmd_handler,
-            recv_handler,
-            signal_tx,
+            body_rx, msg_tx, cmd_rx, signal_tx, handler,
         ));
 
         (cmd_tx, msg_rx)
@@ -234,9 +257,8 @@ where
         mut body_rx: mpsc::UnboundedReceiver<(B, oneshot::Sender<R>)>,
         msg_tx: mpsc::UnboundedSender<M>,
         mut cmd_rx: mpsc::UnboundedReceiver<C>,
-        mut cmd_handler: CH,
-        mut recv_handler: RH,
         signal_tx: mpsc::UnboundedSender<Signal>,
+        mut handler: H,
     ) -> Result<ClosedReason, AllErr> {
         let state = ConnState::default();
 
@@ -245,10 +267,10 @@ where
             let state = state.clone();
             tokio::select! {
                 Some((body, resp_tx)) = body_rx.recv() => {
-                    recv_handler.handle_recv((body, resp_tx), msg_tx, state).await?;
+                    handler.handle_recv((body, resp_tx), msg_tx, state).await?;
                 }
                 Some(cmd) = cmd_rx.recv() => {
-                    cmd_handler.handle_cmd(cmd, msg_tx, state).await?;
+                    handler.handle_cmd(cmd, msg_tx, state).await?;
                 }
                 else => {
                     state.set_active(false);
@@ -258,12 +280,17 @@ where
         }
 
         let (tx, rx) = oneshot::channel();
-        match signal_tx.send(Signal::Close(tx)) {
+        let result: Result<ClosedReason, String> = match signal_tx.send(Signal::Close(tx)) {
             Ok(_) => match rx.await {
                 Ok(_) => Ok(ClosedReason::Ok),
                 Err(_) => Ok(ClosedReason::Partial("close callback closed".into())),
             },
             Err(_) => Ok(ClosedReason::Partial("signal channel closed".into())),
+        };
+
+        if let Err(e) = handler.handle_close(result.clone(), msg_tx).await {
+            log::error!("error occurred while handling conn close: {}", e);
         }
+        result.map_err(AllErr::desc)
     }
 }

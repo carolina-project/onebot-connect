@@ -4,7 +4,8 @@ use futures_util::{
 };
 use http::{header::AUTHORIZATION, HeaderValue};
 use onebot_connect_interface::{
-    app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage}, ClosedReason, ConfigError, Error as OCError
+    app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
+    ClosedReason, ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{self, event::Event};
 use serde_json::Value as Json;
@@ -22,9 +23,14 @@ use tokio_tungstenite::{
 
 pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-use crate::{app::generate_echo, RecvError};
+use crate::{
+    app::generate_echo,
+    common::{CmdHandler, RecvHandler},
+    RecvError,
+};
 
-use super::{ActionMap, RxMessageSource, TxAppProvider};
+use super::*;
+use crate::Error as AllErr;
 
 /// OneBot Connect Websocket Generator
 pub struct WSConnect<R>
@@ -60,11 +66,7 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         }
         let (ws, _) = connect_async(req).await?;
         let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
-        Ok((
-            RxMessageSource::new(msg_rx),
-            TxAppProvider::new(cmd_tx),
-            (),
-        ))
+        Ok((RxMessageSource::new(msg_rx), TxAppProvider::new(cmd_tx), ()))
     }
 
     fn with_authorization(self, access_token: impl Into<String>) -> Self {
@@ -72,6 +74,79 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
             access_token: Some(access_token.into()),
             ..self
         }
+    }
+}
+
+pub struct WSHandler {
+    map: ActionMap,
+    action_tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl WSHandler {
+    pub async fn handle_action(
+        &mut self,
+        action_tx: mpsc::UnboundedSender<tungstenite::Message>,
+        args: ActionArgs,
+        responder: ActionResponder,
+    ) -> Result<(), AllErr> {
+        let ActionArgs { action, self_ } = args;
+        let echo = generate_echo(8, &self.map);
+
+        let res = serde_json::to_vec(&ob12::action::Action {
+            action,
+            echo: Some(echo.clone()),
+            self_,
+        });
+        match res {
+            Ok(data) => {
+                self.map.insert(echo, responder);
+                action_tx.send(data.into()).map_err(OCError::closed)?;
+            }
+            Err(e) => {
+                responder
+                    .send(Err(OCError::other(e)))
+                    .map_err(|_| AllErr::ChannelClosed);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMessage> for WSHandler {
+    async fn handle_cmd(
+        &mut self,
+        cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        state: crate::common::ConnState,
+    ) -> Result<(), AllErr> {
+        let (cmd, action_tx) = cmd;
+        match cmd {
+            Command::Action(args, responder) => {
+                self.handle_action(action_tx, args, responder).await
+            }
+            Command::Close => {
+                state.set_active(false);
+                Ok(())
+            }
+            Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
+            Command::SetConfig((key, _), tx) => tx
+                .send(Err(ConfigError::UnknownKey(key)))
+                .map_err(|_| AllErr::ChannelClosed),
+            Command::Respond(_, _) => {
+                log::error!("command not supported: respond");
+                Ok(())
+            }
+        }
+    }
+}
+impl RecvHandler<tungstenite::Message, RecvMessage> for WSHandler {
+    async fn handle_recv(
+        &mut self,
+        recv: tungstenite::Message,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        state: crate::common::ConnState,
+    ) -> Result<(), crate::Error> {
     }
 }
 
@@ -97,7 +172,6 @@ pub(crate) struct WSConnectionHandle {
     pub msg_rx: mpsc::UnboundedReceiver<RecvMessage>,
     pub cmd_tx: mpsc::UnboundedSender<Command>,
 }
-
 
 pub(crate) trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
@@ -139,31 +213,6 @@ impl WSTaskHandle {
         )
     }
 
-    async fn handle_action(
-        args: ActionArgs,
-        map: &mut ActionMap,
-        action_tx: &mpsc::UnboundedSender<Vec<u8>>,
-        responder: ActionResponder,
-    ) {
-        let ActionArgs { action, self_ } = args;
-        let echo = generate_echo(8, &map);
-
-        let res = serde_json::to_vec(&ob12::action::Action {
-            action,
-            echo: Some(echo.clone()),
-            self_,
-        });
-        match res {
-            Ok(data) => {
-                map.insert(echo, responder);
-                action_tx.send(data).unwrap();
-            }
-            Err(e) => {
-                responder.send(Err(OCError::other(e))).unwrap();
-            }
-        }
-    }
-
     #[inline(always)]
     async fn handle_close(
         signal_tx_send: &mpsc::UnboundedSender<Signal>,
@@ -199,26 +248,6 @@ impl WSTaskHandle {
         }
     }
 
-    #[inline(always)]
-    async fn handle_command(
-        command: Command,
-        action_map: &mut ActionMap,
-        action_tx: &mpsc::UnboundedSender<Vec<u8>>,
-        signal_tx_send: &mpsc::UnboundedSender<Signal>,
-        signal_tx_recv: &mpsc::UnboundedSender<Signal>,
-    ) {
-        match command {
-            Command::Action(args, responder) => {
-                Self::handle_action(args, action_map, action_tx, responder).await;
-            }
-            Command::Close(tx) => {
-                Self::handle_close(signal_tx_send, signal_tx_recv, tx).await;
-            }
-            Command::GetConfig(_, tx) => tx.send(None).unwrap(),
-            Command::SetConfig((key, _), tx) => tx.send(Err(ConfigError::UnknownKey(key))).unwrap(),
-            Command::Respond(_, _) => log::error!("command not supported: respond"),
-        }
-    }
 
     async fn manage_task(
         msg_tx: mpsc::UnboundedSender<RecvMessage>,

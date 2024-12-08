@@ -31,6 +31,7 @@ mod recv {
         Event(Event),
         /// Response after close command
         /// Ok means closed successfully, Err means close failed
+        /// DO NOT send this at command handler, just set active state
         Close(Result<ClosedReason, String>),
     }
 
@@ -52,7 +53,7 @@ mod recv {
         /// Set connection config
         SetConfig((String, Value), oneshot::Sender<Result<(), ConfigError>>),
         /// Close connection
-        Close(oneshot::Sender<Result<ClosedReason, String>>),
+        Close,
     }
 
     /// Receiver for messages from OneBot Connect

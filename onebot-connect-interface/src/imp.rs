@@ -39,6 +39,7 @@ pub enum RecvMessage {
     Action(Action),
     /// Response after close command
     /// Ok means closed successfully, Err means close failed
+    /// DO NOT send this at command handler, just set active state
     Close(Result<ClosedReason, String>),
 }
 
@@ -52,7 +53,7 @@ pub enum Command {
     /// Set connection config
     SetConfig((String, Value), oneshot::Sender<Result<(), ConfigError>>),
     /// Close connection
-    Close(oneshot::Sender<Result<ClosedReason, String>>),
+    Close,
 }
 
 /// Trait for polling messages from a OneBot implementation.

@@ -1,188 +1,42 @@
 use super::*;
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::{header::AUTHORIZATION, server::conn::http1, service::service_fn, StatusCode};
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
 extern crate http as http_lib;
 
 use crate::{
-    common::http_s::{mk_resp, Req, ReqQuery, Response},
-    Authorization, Error as AllErr,
+    common::{
+        http_s::{HttpConfig, HttpServerTask},
+        CloseHandler, CmdHandler, RecvHandler,
+    },
+    Error as AllErr,
 };
 
-use onebot_connect_interface::{app::Connect, ConfigError};
+use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
 use onebot_types::ob12::{action::Action, event::Event};
-use parking_lot::{Mutex, RwLock};
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use parking_lot::Mutex;
+use std::{net::SocketAddr, sync::Arc};
 
 type EventResponder = oneshot::Sender<Vec<Action>>;
-type EventCallTx = mpsc::UnboundedSender<(Event, EventResponder)>;
 
 /// Authorization header and `access_token` query param, choose one to use
-type WebhookConfShared = Arc<RwLock<WebhookConfig>>;
-
-#[derive(Debug, Clone, Default)]
-pub struct WebhookConfig {
-    authorization: Authorization,
-}
-
-#[derive(Clone)]
-pub struct WebhookServer {
-    config: WebhookConfShared,
-    /// Event transmitter channel, send event and its callback(actions)
-    event_tx: EventCallTx,
-}
-
-impl WebhookServer {
-    pub fn new(event_tx: EventCallTx, config: WebhookConfig) -> Self {
-        Self {
-            config: Arc::new(RwLock::new(config)),
-            event_tx,
-        }
-    }
-
-    async fn handle_req(self, req: Req) -> Result<Response, Response> {
-        let Self { config, event_tx } = self;
-        // check access token
-        let mut passed = false;
-        if let Some((header_token, query_token)) = &config.read().authorization {
-            if let Some(header) = req.headers().get(AUTHORIZATION) {
-                if header == header_token {
-                    passed = true;
-                }
-            } else if let Some(query) = req.uri().query() {
-                let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
-                    mk_resp(
-                        StatusCode::BAD_REQUEST,
-                        Some(format!("invalid request query: {}", e)),
-                    )
-                })?;
-                if params.access_token == query_token {
-                    passed = true;
-                }
-            }
-        }
-
-        if !passed {
-            return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
-        }
-
-        let data = req.into_body().collect().await.map_err(|e| {
-            mk_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(format!("http body err: {e}")),
-            )
-        })?;
-
-        // parse event
-        let event: Event = serde_json::from_slice(&data.to_bytes()).map_err(|e| {
-            mk_resp(
-                StatusCode::BAD_REQUEST,
-                Some(format!("invalid data: {}", e)),
-            )
-        })?;
-
-        let (tx, rx) = oneshot::channel();
-        event_tx.send((event, tx)).unwrap();
-        // acquire response
-        let actions = rx.await.unwrap();
-        if actions.len() > 0 {
-            let json = serde_json::to_vec(&actions).map_err(|e| {
-                mk_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Some(format!("error while serializing actions: {}", e)),
-                )
-            })?;
-            Ok(mk_resp(StatusCode::OK, Some(json)))
-        } else {
-            Ok(mk_resp(StatusCode::NO_CONTENT, None::<Bytes>))
-        }
-    }
-}
 
 type ActionsMap = FxHashMap<String, EventResponder>;
-pub struct WebhookConnect {
-    config: WebhookConfig,
-    addr: SocketAddr,
+#[derive(Default)]
+struct WHandler {
+    actions_map: ActionsMap,
 }
-impl WebhookConnect {
-    pub fn new(addr: impl Into<SocketAddr>) -> Self {
-        Self {
-            config: Default::default(),
-            addr: addr.into(),
-        }
-    }
 
-    async fn server_task(
-        addr: SocketAddr,
-        event_tx: EventCallTx,
-        config: WebhookConfig,
-    ) -> Result<(), AllErr> {
-        async fn service(
-            serv: WebhookServer,
-            req: Req,
-        ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-            Ok(serv.handle_req(req).await.unwrap_or_else(|e| e))
-        }
-
-        let listener = TcpListener::bind(addr).await?;
-        let serv = WebhookServer::new(event_tx, config);
-        loop {
-            let (tcp, _) = listener.accept().await?;
-            let io = TokioIo::new(tcp);
-
-            let serv = serv.clone();
-            tokio::task::spawn(async move {
-                if let Err(err) = http1::Builder::new()
-                    .serve_connection(io, service_fn(|r| service(serv.clone(), r)))
-                    .await
-                {
-                    println!("Failed to serve connection: {:?}", err);
-                }
-            });
-        }
-    }
-
-    async fn manage_task(
-        mut event_rx: mpsc::UnboundedReceiver<(Event, EventResponder)>,
-        msg_tx: mpsc::UnboundedSender<RecvMessage>,
-        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
+impl CmdHandler<Command, RecvMessage> for WHandler {
+    async fn handle_cmd(
+        &mut self,
+        cmd: Command,
+        _msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
-        let mut actions_map = ActionsMap::default();
-        loop {
-            tokio::select! {
-                result = event_rx.recv() => {
-                    if let Some((event, actions_tx)) = result {
-                        actions_map.insert(event.id.clone(), actions_tx);
-
-                        msg_tx
-                            .send(RecvMessage::Event(event))
-                            .map_err(|_| AllErr::ChannelClosed)?
-                    } else {
-                        break
-                    }
-                }
-                cmd = cmd_rx.recv() => {
-                    if let Some(cmd) = cmd {
-                        Self::handle_cmd(cmd, &mut actions_map).await?;
-                    } else {
-                        break
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_cmd(cmd: Command, actions_map: &mut ActionsMap) -> Result<(), AllErr> {
         match cmd {
             Command::Action(_, tx) => tx
                 .send(Err(OCError::not_supported("send action actively").into()))
                 .map_err(|_| AllErr::ChannelClosed),
             Command::Respond(id, actions) => {
-                if let Some(tx) = actions_map.remove(&id) {
+                if let Some(tx) = self.actions_map.remove(&id) {
                     tx.send(
                         actions
                             .into_iter()
@@ -204,7 +58,51 @@ impl WebhookConnect {
             Command::SetConfig((key, _), tx) => tx
                 .send(Err(ConfigError::UnknownKey(key)))
                 .map_err(|_| AllErr::ChannelClosed),
-            Command::Close(_) => todo!(),
+            Command::Close => {
+                state.set_active(false);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl RecvHandler<(Event, oneshot::Sender<Vec<Action>>), RecvMessage> for WHandler {
+    async fn handle_recv(
+        &mut self,
+        recv: (Event, oneshot::Sender<Vec<Action>>),
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        _state: crate::common::ConnState,
+    ) -> Result<(), crate::Error> {
+        let (event, actions_tx) = recv;
+        self.actions_map.insert(event.id.clone(), actions_tx);
+
+        msg_tx
+            .send(RecvMessage::Event(event))
+            .map_err(|_| AllErr::ChannelClosed)
+    }
+}
+
+impl CloseHandler<RecvMessage> for WHandler {
+    async fn handle_close(
+        &mut self,
+        result: Result<ClosedReason, String>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+    ) -> Result<(), crate::Error> {
+        Ok(msg_tx
+            .send(RecvMessage::Close(result))
+            .map_err(OCError::closed)?)
+    }
+}
+
+pub struct WebhookConnect {
+    config: HttpConfig,
+    addr: SocketAddr,
+}
+impl WebhookConnect {
+    pub fn new(addr: impl Into<SocketAddr>) -> Self {
+        Self {
+            config: Default::default(),
+            addr: addr.into(),
         }
     }
 }
@@ -218,12 +116,8 @@ impl Connect for WebhookConnect {
     type Source = RxMessageSource;
 
     async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-
-        tokio::spawn(Self::manage_task(event_rx, msg_tx.clone(), cmd_rx));
-        tokio::spawn(Self::server_task(self.addr, event_tx, self.config));
+        let (cmd_tx, msg_rx) =
+            HttpServerTask::create(self.addr, self.config, WHandler::default()).await;
 
         Ok((
             RxMessageSource::new(msg_rx),
@@ -243,7 +137,6 @@ pub struct WebhookAppInner {
     event_id: String,
     actions: Mutex<Vec<ActionArgs>>,
 }
-
 pub struct WebhookApp {
     is_owner: bool,
     inner: Arc<WebhookAppInner>,

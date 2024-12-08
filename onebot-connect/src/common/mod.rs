@@ -5,6 +5,7 @@ pub mod ws;
 
 use std::{future::Future, sync::Arc};
 
+use onebot_connect_interface::ClosedReason;
 use parking_lot::RwLock;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
@@ -86,4 +87,12 @@ where
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_ {
         self(recv, msg_tx, state)
     }
+}
+
+pub trait CloseHandler<M> {
+    fn handle_close(
+        &mut self,
+        result: Result<ClosedReason, String>,
+        msg_tx: UnboundedSender<M>,
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_;
 }

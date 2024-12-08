@@ -17,45 +17,53 @@ use onebot_connect_interface::{ClosedReason, Error as OCErr};
 
 use super::*;
 
-pub(crate) struct WSTaskHandle<Body, Resp, Cmd, Msg, CHandler, RHandler>
+pub(crate) trait WSTaskHandler<Cmd, Body, Msg>:
+    CmdHandler<(Cmd, mpsc::UnboundedSender<tungstenite::Message>), Msg>
+    + RecvHandler<Body, Msg>
+    + CloseHandler<Msg>
+    + Send
+    + 'static
+{
+}
+impl<C, B, M, T> WSTaskHandler<C, B, M> for T where
+    T: CmdHandler<(C, mpsc::UnboundedSender<tungstenite::Message>), M>
+        + RecvHandler<B, M>
+        + CloseHandler<M>
+        + Send
+        + 'static
+{
+}
+
+pub(crate) struct WSTaskHandle<Body, Resp, Cmd, Msg, Handler>
 where
-    CHandler: CmdHandler<(Cmd, mpsc::UnboundedSender<tungstenite::Message>), Msg>,
     Body: DeserializeOwned + Send + 'static,
     Resp: Serialize + Send + 'static,
-    RHandler: RecvHandler<Body, Msg>,
+    Handler: WSTaskHandler<Cmd, Body, Msg>,
 {
-    _phantom: PhantomData<(CHandler, Body, Resp, RHandler, Msg, Cmd)>,
+    _phantom: PhantomData<(Handler, Body, Resp, Msg, Cmd)>,
 }
 
 pub trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 
-impl<B, R, C, M, CH, RH> WSTaskHandle<B, R, C, M, CH, RH>
+impl<B, R, C, M, HL> WSTaskHandle<B, R, C, M, HL>
 where
-    CH: CmdHandler<(C, mpsc::UnboundedSender<tungstenite::Message>), M> + Send + 'static,
+    HL: WSTaskHandler<C, B, M>,
     B: DeserializeOwned + Send + 'static,
     R: Serialize + Send + 'static,
-    RH: RecvHandler<B, M> + Send + 'static,
     M: Send + 'static,
     C: Send + 'static,
 {
     pub async fn create<S>(
         ws: WebSocketStream<S>,
-        recv_handler: RH,
-        cmd_handler: CH,
+        handler: HL,
     ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>)
     where
         S: WsStream,
     {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::manage_task(
-            ws,
-            cmd_rx,
-            msg_tx,
-            recv_handler,
-            cmd_handler,
-        ));
+        tokio::spawn(Self::manage_task(ws, cmd_rx, msg_tx, handler));
 
         (cmd_tx, msg_rx)
     }
@@ -65,8 +73,7 @@ where
         ws: WebSocketStream<S>,
         mut cmd_rx: mpsc::UnboundedReceiver<C>,
         msg_tx: mpsc::UnboundedSender<M>,
-        mut recv_handler: RH,
-        mut cmd_handler: CH,
+        mut handler: HL,
     ) -> Result<ClosedReason, AllErr>
     where
         S: WsStream,
@@ -90,7 +97,7 @@ where
             let msg_tx = msg_tx.clone();
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
-                    cmd_handler.handle_cmd((cmd, send_tx.clone()), msg_tx, state).await?;
+                    handler.handle_cmd((cmd, send_tx.clone()), msg_tx, state).await?;
                 },
                 Some(msg) = recv_rx.recv() => {
                     let recv: B = match serde_json::from_slice(&msg.into_data()) {
@@ -100,13 +107,13 @@ where
                             continue;
                         },
                     };
-                    recv_handler.handle_recv(recv, msg_tx, state).await?;
+                    handler.handle_recv(recv, msg_tx, state).await?;
                 },
                 else => return Err(AllErr::ChannelClosed),
             }
         }
 
-        async fn close(tx: mpsc::UnboundedSender<Signal>) -> Result<ClosedReason, AllErr> {
+        async fn close(tx: mpsc::UnboundedSender<Signal>) -> Result<ClosedReason, String> {
             let (cb_tx, cb_rx) = oneshot::channel();
             match tx.send(Signal::Close(cb_tx)) {
                 Ok(_) => match cb_rx.await {
@@ -117,9 +124,14 @@ where
             }
         }
 
-        let ss_res = close(signal_send_tx).await;
-        let sr_res = close(signal_recv_tx).await;
-        ss_res.and(sr_res)
+        let ss_res: Result<ClosedReason, String> = close(signal_send_tx).await;
+        let sr_res: Result<ClosedReason, String> = close(signal_recv_tx).await;
+        let res = ss_res.and(sr_res);
+
+        if let Err(e) = handler.handle_close(res.clone(), msg_tx).await {
+            log::error!("error occurred while handling conn close: {}", e);
+        }
+        res.map_err(AllErr::desc)
     }
 
     /// Handles sending messages over the WebSocket connection.

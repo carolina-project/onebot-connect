@@ -28,6 +28,14 @@ pub enum Error {
     #[cfg(feature = "http")]
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
+    #[error("{0}")]
+    Desc(String),
+}
+
+impl Error {
+    pub fn desc(msg: impl Into<String>) -> Self {
+        Self::Desc(msg.into())
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -39,7 +47,8 @@ pub enum RecvError {
 }
 
 impl RecvError {
-    pub fn invalid_data(msg: impl AsRef<str>) -> RecvError {
-        Self::InvalidData(msg.as_ref().to_owned())
+    pub fn invalid_data(msg: impl Into<String>) -> RecvError {
+        Self::InvalidData(msg.into())
     }
+
 }
