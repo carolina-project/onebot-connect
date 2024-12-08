@@ -5,16 +5,17 @@ use http::{header::AUTHORIZATION, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
+use onebot_connect_interface::ClosedReason;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot},
 };
 
 use crate::Error as AllErr;
 
-use super::{CmdHandler, RecvHandler};
+use super::*;
 
 type Authorization = Option<(String, String)>;
 pub(crate) type Response = hyper::Response<Full<Bytes>>;
@@ -38,7 +39,7 @@ pub struct HttpConfig {
 }
 type HttpConfShared = Arc<RwLock<HttpConfig>>;
 
-pub struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
+struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
     config: HttpConfShared,
     body_tx: mpsc::UnboundedSender<(Body, oneshot::Sender<Resp>)>,
 }
@@ -119,7 +120,7 @@ impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpSe
     }
 }
 
-pub struct HttpServerTask<Body, Resp, Cmd, Msg, CHandler, RHandler>
+pub(crate) struct HttpServerTask<Body, Resp, Cmd, Msg, CHandler, RHandler>
 where
     CHandler: CmdHandler<Cmd, Msg>,
     Body: DeserializeOwned + Send + 'static,
@@ -147,15 +148,21 @@ where
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-
-        tokio::spawn(Self::server_task(addr.into(), body_tx, config.clone()));
+        tokio::spawn(Self::server_task(
+            addr.into(),
+            body_tx,
+            signal_rx,
+            config.clone(),
+        ));
         tokio::spawn(Self::manage_task(
             body_rx,
             msg_tx,
             cmd_rx,
             cmd_handler,
             recv_handler,
+            signal_tx,
         ));
 
         (cmd_tx, msg_rx)
@@ -164,13 +171,20 @@ where
     async fn server_task(
         addr: SocketAddr,
         body_tx: mpsc::UnboundedSender<(B, oneshot::Sender<R>)>,
+        mut signal_rx: mpsc::UnboundedReceiver<Signal>,
         config: HttpConfig,
     ) -> Result<(), AllErr> {
         let listener = TcpListener::bind(addr).await?;
         let serv = HttpServer::new(body_tx, config);
-        loop {
-            let (tcp, _) = listener.accept().await?;
-            let io = TokioIo::new(tcp);
+
+        async fn handle_http<
+            Body: DeserializeOwned + Send + 'static,
+            Resp: Serialize + Send + 'static,
+        >(
+            conn: TcpStream,
+            serv: HttpServer<Body, Resp>,
+        ) -> Result<(), AllErr> {
+            let io = TokioIo::new(conn);
 
             let serv_clone = serv.clone();
             tokio::task::spawn(async move {
@@ -188,6 +202,31 @@ where
                     println!("Failed to serve connection: {:?}", err);
                 }
             });
+            Ok(())
+        }
+
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    match result {
+                        Ok((conn, _)) => {
+                            handle_http(conn, serv.clone()).await?;
+                        },
+                        Err(e) => {
+                            log::error!("faild to accept tcp conn: {}", e);
+                        },
+                    }
+                },
+                Some(signal) = signal_rx.recv() => {
+                    match signal {
+                        Signal::Close(tx) => {
+                            tx.send(Ok(())).map_err(|_| AllErr::ChannelClosed)?;
+                            break Ok(())
+                        },
+                    }
+                }
+                else => break Err(AllErr::ChannelClosed)
+            }
         }
     }
 
@@ -197,26 +236,34 @@ where
         mut cmd_rx: mpsc::UnboundedReceiver<C>,
         mut cmd_handler: CH,
         mut recv_handler: RH,
-    ) -> Result<(), AllErr> {
-        loop {
+        signal_tx: mpsc::UnboundedSender<Signal>,
+    ) -> Result<ClosedReason, AllErr> {
+        let state = ConnState::default();
+
+        while state.is_active() {
+            let msg_tx = msg_tx.clone();
+            let state = state.clone();
             tokio::select! {
-                result = body_rx.recv() => {
-                    if let Some((body, resp_tx)) = result {
-                        recv_handler.handle_recv((body, resp_tx), &msg_tx).await?;
-                    } else {
-                        break
-                    }
+                Some((body, resp_tx)) = body_rx.recv() => {
+                    recv_handler.handle_recv((body, resp_tx), msg_tx, state).await?;
                 }
-                cmd = cmd_rx.recv() => {
-                    if let Some(cmd) = cmd {
-                        cmd_handler.handle_cmd(cmd, &msg_tx).await?;
-                    } else {
-                        break
-                    }
+                Some(cmd) = cmd_rx.recv() => {
+                    cmd_handler.handle_cmd(cmd, msg_tx, state).await?;
+                }
+                else => {
+                    state.set_active(false);
+                    return Err(AllErr::ChannelClosed)
                 }
             }
         }
 
-        Ok(())
+        let (tx, rx) = oneshot::channel();
+        match signal_tx.send(Signal::Close(tx)) {
+            Ok(_) => match rx.await {
+                Ok(_) => Ok(ClosedReason::Ok),
+                Err(_) => Ok(ClosedReason::Partial("close callback closed".into())),
+            },
+            Err(_) => Ok(ClosedReason::Partial("signal channel closed".into())),
+        }
     }
 }
