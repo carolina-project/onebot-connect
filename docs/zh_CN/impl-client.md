@@ -15,4 +15,3 @@
 3. 编写`MessageSource`
     通过编写`MessageSource`实现来获取连接产生的一系列消息，比如连接关闭和事件。
 
-
