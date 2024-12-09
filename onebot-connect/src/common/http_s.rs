@@ -39,17 +39,6 @@ pub(crate) struct HttpConfig {
     pub authorization: Authorization,
 }
 
-impl HttpConfig {
-    fn new<S: Into<String>>(access_token: Option<S>) -> Self {
-        Self {
-            authorization: access_token.map(|r| {
-                let token: String = r.into();
-                (format!("Bearer {}", token), token)
-            }),
-        }
-    }
-}
-
 type HttpConfShared = Arc<RwLock<HttpConfig>>;
 
 struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
@@ -263,14 +252,13 @@ where
         let state = ConnState::default();
 
         while state.is_active() {
-            let msg_tx = msg_tx.clone();
             let state = state.clone();
             tokio::select! {
                 Some((body, resp_tx)) = body_rx.recv() => {
-                    handler.handle_recv((body, resp_tx), msg_tx, state).await?;
+                    handler.handle_recv((body, resp_tx), msg_tx.clone(), state).await?;
                 }
                 Some(cmd) = cmd_rx.recv() => {
-                    handler.handle_cmd(cmd, msg_tx, state).await?;
+                    handler.handle_cmd(cmd, state).await?;
                 }
                 else => {
                     state.set_active(false);

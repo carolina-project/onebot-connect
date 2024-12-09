@@ -5,10 +5,9 @@ use onebot_connect_interface::app::Connect;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_tungstenite::WebSocketStream;
 
-use super::{
-    ws::WSTaskHandle,
-    RxMessageSource, TxAppProvider,
-};
+use crate::common::ws::WSTask;
+
+use super::{ws::WSHandler, RxMessageSource, TxAppProvider};
 
 pub type WebSocketConn = WebSocketStream<TcpStream>;
 
@@ -23,9 +22,7 @@ impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
     type Source = RxMessageSource;
     type Provider = TxAppProvider;
 
-    async fn connect(
-        self,
-    ) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
+    async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let listener = TcpListener::bind(self.addr).await?;
 
         let (stream, addr) = listener.accept().await?;
@@ -56,13 +53,12 @@ impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
             },
         )
         .await?;
-
-        let (_task_handle, conn_handle) = WSTaskHandle::create(ws_stream);
+        let (cmd_tx, msg_rx) = WSTask::create(ws_stream, WSHandler::default()).await;
 
         Ok((
-            RxMessageSource::new(conn_handle.msg_rx),
-            TxAppProvider::new(conn_handle.cmd_tx),
-            addr
+            RxMessageSource::new(msg_rx),
+            TxAppProvider::new(cmd_tx),
+            addr,
         ))
     }
 

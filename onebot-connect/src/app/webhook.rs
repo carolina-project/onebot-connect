@@ -28,7 +28,6 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
     async fn handle_cmd(
         &mut self,
         cmd: Command,
-        _msg_tx: mpsc::UnboundedSender<RecvMessage>,
         state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
         match cmd {

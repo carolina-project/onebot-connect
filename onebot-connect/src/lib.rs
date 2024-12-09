@@ -7,8 +7,6 @@ pub mod imp;
 
 pub mod common;
 
-type Authorization = Option<(String, String)>;
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]

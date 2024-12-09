@@ -4,7 +4,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot},
@@ -34,23 +34,21 @@ impl<C, B, M, T> WSTaskHandler<C, B, M> for T where
 {
 }
 
-pub(crate) struct WSTaskHandle<Body, Resp, Cmd, Msg, Handler>
+pub(crate) struct WSTask<Body, Cmd, Msg, Handler>
 where
     Body: DeserializeOwned + Send + 'static,
-    Resp: Serialize + Send + 'static,
     Handler: WSTaskHandler<Cmd, Body, Msg>,
 {
-    _phantom: PhantomData<(Handler, Body, Resp, Msg, Cmd)>,
+    _phantom: PhantomData<(Handler, Body, Msg, Cmd)>,
 }
 
 pub trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 
-impl<B, R, C, M, HL> WSTaskHandle<B, R, C, M, HL>
+impl<B, C, M, HL> WSTask<B, C, M, HL>
 where
     HL: WSTaskHandler<C, B, M>,
     B: DeserializeOwned + Send + 'static,
-    R: Serialize + Send + 'static,
     M: Send + 'static,
     C: Send + 'static,
 {
@@ -94,10 +92,9 @@ where
 
         while state.is_active() {
             let state = state.clone();
-            let msg_tx = msg_tx.clone();
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
-                    handler.handle_cmd((cmd, send_tx.clone()), msg_tx, state).await?;
+                    handler.handle_cmd((cmd, send_tx.clone()), state).await?;
                 },
                 Some(msg) = recv_rx.recv() => {
                     let recv: B = match serde_json::from_slice(&msg.into_data()) {
@@ -107,7 +104,7 @@ where
                             continue;
                         },
                     };
-                    handler.handle_recv(recv, msg_tx, state).await?;
+                    handler.handle_recv(recv, msg_tx.clone(), state).await?;
                 },
                 else => return Err(AllErr::ChannelClosed),
             }

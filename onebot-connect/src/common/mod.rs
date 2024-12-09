@@ -43,23 +43,21 @@ pub trait CmdHandler<C, M> {
     fn handle_cmd(
         &mut self,
         cmd: C,
-        msg_tx: UnboundedSender<M>,
         state: ConnState,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_;
 }
 
 impl<F, R, C, M> CmdHandler<C, M> for F
 where
-    F: Fn(C, UnboundedSender<M>, ConnState) -> R,
+    F: Fn(C, ConnState) -> R,
     R: Future<Output = Result<(), crate::Error>> + Send + 'static,
 {
     fn handle_cmd(
         &mut self,
         cmd: C,
-        msg_tx: UnboundedSender<M>,
         state: ConnState,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_ {
-        self(cmd, msg_tx, state)
+        self(cmd, state)
     }
 }
 

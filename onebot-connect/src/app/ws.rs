@@ -1,23 +1,16 @@
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
-use http::{header::AUTHORIZATION, HeaderValue};
+use ::http::HeaderValue;
+use hyper::header::AUTHORIZATION;
 use onebot_connect_interface::{
     app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
     ClosedReason, ConfigError, Error as OCError,
 };
-use onebot_types::ob12::{self, event::Event};
+use onebot_types::ob12::{self, action::RespData, event::Event};
+use serde::Deserialize;
 use serde_json::Value as Json;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{self, client::IntoClientRequest, Error as WsError},
+    tungstenite::{self, client::IntoClientRequest},
     MaybeTlsStream, WebSocketStream,
 };
 
@@ -25,12 +18,143 @@ pub type WebSocketConn = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 use crate::{
     app::generate_echo,
-    common::{CmdHandler, RecvHandler},
-    RecvError,
+    common::{ws::WSTask, CloseHandler, CmdHandler, RecvHandler},
 };
 
 use super::*;
 use crate::Error as AllErr;
+
+#[derive(Debug, Default)]
+pub struct WSHandler {
+    map: ActionMap,
+}
+
+impl WSHandler {
+    pub async fn handle_action(
+        &mut self,
+        action_tx: mpsc::UnboundedSender<tungstenite::Message>,
+        args: ActionArgs,
+        responder: ActionResponder,
+    ) -> Result<(), AllErr> {
+        let ActionArgs { action, self_ } = args;
+        let echo = generate_echo(8, &self.map);
+
+        let res = serde_json::to_vec(&ob12::action::Action {
+            action,
+            echo: Some(echo.clone()),
+            self_,
+        });
+        match res {
+            Ok(data) => {
+                self.map.insert(echo, responder);
+                action_tx.send(data.into()).map_err(OCError::closed)?;
+            }
+            Err(e) => {
+                responder
+                    .send(Err(OCError::other(e)))
+                    .map_err(|_| AllErr::ChannelClosed)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMessage> for WSHandler {
+    async fn handle_cmd(
+        &mut self,
+        cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
+        state: crate::common::ConnState,
+    ) -> Result<(), AllErr> {
+        let (cmd, action_tx) = cmd;
+        match cmd {
+            Command::Action(args, responder) => {
+                self.handle_action(action_tx, args, responder).await
+            }
+            Command::Close => {
+                state.set_active(false);
+                Ok(())
+            }
+            Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
+            Command::SetConfig((key, _), tx) => tx
+                .send(Err(ConfigError::UnknownKey(key)))
+                .map_err(|_| AllErr::ChannelClosed),
+            Command::Respond(_, _) => {
+                log::error!("command not supported: respond");
+                Ok(())
+            }
+        }
+    }
+}
+
+pub(super) enum RecvData {
+    Event(Event),
+    /// Response data and `echo`
+    Response(RespData),
+}
+
+impl<'de> Deserialize<'de> for RecvData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let data: serde_json::Map<String, Json> = Deserialize::deserialize(deserializer)?;
+        if data.get("echo").is_some() {
+            Ok(RecvData::Response(
+                serde_json::from_value(Json::Object(data)).map_err(Error::custom)?,
+            ))
+        } else if data.get("type").is_some() {
+            Ok(RecvData::Event(
+                serde_json::from_value(Json::Object(data)).map_err(Error::custom)?,
+            ))
+        } else {
+            Err(Error::custom("unknown data type"))
+        }
+    }
+}
+
+impl RecvHandler<RecvData, RecvMessage> for WSHandler {
+    async fn handle_recv(
+        &mut self,
+        recv: RecvData,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+        _state: crate::common::ConnState,
+    ) -> Result<(), crate::Error> {
+        match recv {
+            RecvData::Event(event) => {
+                msg_tx
+                    .send(RecvMessage::Event(event))
+                    .map_err(OCError::closed)?;
+            }
+            RecvData::Response(resp) => match resp.echo {
+                Some(ref e) => {
+                    if let Some(responder) = self.map.remove(e) {
+                        responder
+                            .send(Ok(resp.data))
+                            .map_err(|_| crate::Error::ChannelClosed)?;
+                    }
+                }
+                None => {
+                    log::error!("action missing field `echo`")
+                }
+            },
+        }
+        Ok(())
+    }
+}
+
+impl CloseHandler<RecvMessage> for WSHandler {
+    async fn handle_close(
+        &mut self,
+        result: Result<ClosedReason, String>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
+    ) -> Result<(), crate::Error> {
+        Ok(msg_tx
+            .send(RecvMessage::Close(result))
+            .map_err(OCError::closed)?)
+    }
+}
 
 /// OneBot Connect Websocket Generator
 pub struct WSConnect<R>
@@ -65,7 +189,7 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
             );
         }
         let (ws, _) = connect_async(req).await?;
-        let (_tasks, WSConnectionHandle { msg_rx, cmd_tx }) = WSTaskHandle::create(ws);
+        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler::default()).await;
         Ok((RxMessageSource::new(msg_rx), TxAppProvider::new(cmd_tx), ()))
     }
 
@@ -73,318 +197,6 @@ impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
         Self {
             access_token: Some(access_token.into()),
             ..self
-        }
-    }
-}
-
-pub struct WSHandler {
-    map: ActionMap,
-    action_tx: mpsc::UnboundedSender<Vec<u8>>,
-}
-
-impl WSHandler {
-    pub async fn handle_action(
-        &mut self,
-        action_tx: mpsc::UnboundedSender<tungstenite::Message>,
-        args: ActionArgs,
-        responder: ActionResponder,
-    ) -> Result<(), AllErr> {
-        let ActionArgs { action, self_ } = args;
-        let echo = generate_echo(8, &self.map);
-
-        let res = serde_json::to_vec(&ob12::action::Action {
-            action,
-            echo: Some(echo.clone()),
-            self_,
-        });
-        match res {
-            Ok(data) => {
-                self.map.insert(echo, responder);
-                action_tx.send(data.into()).map_err(OCError::closed)?;
-            }
-            Err(e) => {
-                responder
-                    .send(Err(OCError::other(e)))
-                    .map_err(|_| AllErr::ChannelClosed);
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMessage> for WSHandler {
-    async fn handle_cmd(
-        &mut self,
-        cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
-        msg_tx: mpsc::UnboundedSender<RecvMessage>,
-        state: crate::common::ConnState,
-    ) -> Result<(), AllErr> {
-        let (cmd, action_tx) = cmd;
-        match cmd {
-            Command::Action(args, responder) => {
-                self.handle_action(action_tx, args, responder).await
-            }
-            Command::Close => {
-                state.set_active(false);
-                Ok(())
-            }
-            Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
-            Command::SetConfig((key, _), tx) => tx
-                .send(Err(ConfigError::UnknownKey(key)))
-                .map_err(|_| AllErr::ChannelClosed),
-            Command::Respond(_, _) => {
-                log::error!("command not supported: respond");
-                Ok(())
-            }
-        }
-    }
-}
-impl RecvHandler<tungstenite::Message, RecvMessage> for WSHandler {
-    async fn handle_recv(
-        &mut self,
-        recv: tungstenite::Message,
-        msg_tx: mpsc::UnboundedSender<RecvMessage>,
-        state: crate::common::ConnState,
-    ) -> Result<(), crate::Error> {
-    }
-}
-
-enum Signal {
-    Close(oneshot::Sender<Result<(), String>>),
-}
-enum RecvData {
-    Event(Event),
-    /// Response data and `echo`
-    Response((ob12::action::RespData, String)),
-}
-
-/// WebSocket connection task handle
-#[allow(unused)]
-pub(crate) struct WSTaskHandle {
-    pub recv_handle: JoinHandle<Result<(), crate::Error>>,
-    pub send_handle: JoinHandle<Result<(), crate::Error>>,
-    pub manage_handle: JoinHandle<Result<(), crate::Error>>,
-}
-
-/// Wrapper for `RxMessageSource` and `TxClient`
-pub(crate) struct WSConnectionHandle {
-    pub msg_rx: mpsc::UnboundedReceiver<RecvMessage>,
-    pub cmd_tx: mpsc::UnboundedSender<Command>,
-}
-
-pub(crate) trait WsStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
-impl<T> WsStream for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
-
-impl WSTaskHandle {
-    pub(crate) fn create<T>(ws: WebSocketStream<T>) -> (Self, WSConnectionHandle)
-    where
-        T: WsStream,
-    {
-        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-
-        let (write, read) = ws.split();
-
-        let (signal_tx_recv, signal_rx_recv) = mpsc::unbounded_channel();
-        let (signal_tx_send, signal_rx_send) = mpsc::unbounded_channel();
-
-        let (recv_data_tx, recv_data_rx) = mpsc::unbounded_channel();
-        let (action_tx, action_rx) = mpsc::unbounded_channel();
-
-        let recv_handle = tokio::spawn(Self::recv_task(read, recv_data_tx, signal_rx_recv));
-        let send_handle = tokio::spawn(Self::send_task(write, action_rx, signal_rx_send));
-        let manage_handle = tokio::spawn(Self::manage_task(
-            msg_tx,
-            cmd_rx,
-            signal_tx_recv,
-            signal_tx_send,
-            recv_data_rx,
-            action_tx,
-        ));
-
-        (
-            Self {
-                recv_handle,
-                send_handle,
-                manage_handle,
-            },
-            WSConnectionHandle { msg_rx, cmd_tx },
-        )
-    }
-
-    #[inline(always)]
-    async fn handle_close(
-        signal_tx_send: &mpsc::UnboundedSender<Signal>,
-        signal_tx_recv: &mpsc::UnboundedSender<Signal>,
-        tx: oneshot::Sender<Result<ClosedReason, String>>,
-    ) {
-        let (close_tx_recv, close_rx_recv) = oneshot::channel();
-        let (close_tx_send, close_rx_send) = oneshot::channel();
-        signal_tx_recv.send(Signal::Close(close_tx_recv)).unwrap();
-        signal_tx_send.send(Signal::Close(close_tx_send)).unwrap();
-
-        let (recv_result, send_result) =
-            (close_rx_recv.await.unwrap(), close_rx_send.await.unwrap());
-
-        if recv_result.is_err() && send_result.is_err() {
-            tx.send(Err(format!(
-                "recv task error: {} \n send task error: {}",
-                recv_result.err().unwrap(),
-                send_result.err().unwrap()
-            )))
-            .unwrap();
-        } else {
-            let mut err_str = String::new();
-            if let Err(e) = recv_result {
-                err_str.push_str(&format!("recv task error: {}\n", e));
-            }
-
-            if let Err(e) = send_result {
-                err_str.push_str(&format!("send task error: {}", e));
-            }
-
-            tx.send(Ok(ClosedReason::Partial(err_str))).unwrap();
-        }
-    }
-
-
-    async fn manage_task(
-        msg_tx: mpsc::UnboundedSender<RecvMessage>,
-        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
-        signal_tx_recv: mpsc::UnboundedSender<Signal>,
-        signal_tx_send: mpsc::UnboundedSender<Signal>,
-        mut recv_data_rx: mpsc::UnboundedReceiver<RecvData>,
-        action_tx: mpsc::UnboundedSender<Vec<u8>>,
-    ) -> Result<(), crate::Error> {
-        let mut action_map = ActionMap::default();
-        loop {
-            tokio::select! {
-                command = cmd_rx.recv() => {
-                    let Some(command) = command else {
-                        break Err(crate::Error::ChannelClosed)
-                    };
-                    Self::handle_command(
-                        command,
-                        &mut action_map,
-                        &action_tx,
-                        &signal_tx_send,
-                        &signal_tx_recv
-                    ).await;
-                }
-                recv_data = recv_data_rx.recv() => {
-                    let Some(data) = recv_data else {
-                        break Err(crate::Error::ChannelClosed)
-                    };
-
-                    match data {
-                        RecvData::Event(event) => {
-                            msg_tx.send(RecvMessage::Event(event)).unwrap()
-                        },
-                        RecvData::Response((resp, echo)) => {
-                            if let Some(resp_tx) = action_map.remove(&echo) {
-                                if resp.is_success() {
-                                    resp_tx.send(Ok(resp.data)).unwrap();
-                                } else {
-                                    resp_tx.send(Err(OCError::Resp(resp.into()))).unwrap();
-                                }
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    }
-
-    async fn send_task<T>(
-        mut stream: SplitSink<WebSocketStream<T>, tokio_tungstenite::tungstenite::Message>,
-        mut action_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-        mut signal_rx: mpsc::UnboundedReceiver<Signal>,
-    ) -> Result<(), crate::Error>
-    where
-        T: WsStream,
-    {
-        loop {
-            tokio::select! {
-                action = action_rx.recv() => {
-                    let Some(action) = action else {
-                        break Err(crate::Error::ChannelClosed)
-                    };
-
-                    match stream.send(
-                        tungstenite::Message::from(action)
-                    ).await {
-                        Ok(_) => {},
-                        Err(WsError::ConnectionClosed) => {
-                            break Err(crate::Error::ConnectionClosed)
-                        },
-                        Err(e) => {
-                            log::error!("ws error: {}", e)
-                        }
-                    };
-
-                }
-                signal = signal_rx.recv() => {
-                    if let Some(Signal::Close(tx)) = signal {
-                        tx.send(Ok(())).unwrap();
-                        break Ok(())
-                    }
-                }
-            }
-        }
-    }
-
-    fn parse_data(data: Vec<u8>) -> Result<RecvData, RecvError> {
-        let Json::Object(data) = serde_json::from_slice::<Json>(&data)? else {
-            return Err(RecvError::invalid_data("expected object"));
-        };
-        if data.get("echo").is_some() {
-            Ok(RecvData::Response(serde_json::from_value(Json::Object(
-                data,
-            ))?))
-        } else if data.get("type").is_some() {
-            Ok(RecvData::Event(serde_json::from_value(Json::Object(data))?))
-        } else {
-            Err(RecvError::invalid_data("unknown data type"))
-        }
-    }
-
-    async fn recv_task<T>(
-        mut stream: SplitStream<WebSocketStream<T>>,
-        data_tx: mpsc::UnboundedSender<RecvData>,
-        mut signal_rx: mpsc::UnboundedReceiver<Signal>,
-    ) -> Result<(), crate::Error>
-    where
-        T: WsStream,
-    {
-        loop {
-            tokio::select! {
-                data = stream.next() => {
-                    let Some(data) = data else {
-                        break Err(crate::Error::ConnectionClosed)
-                    };
-
-                    match data {
-                        Ok(msg) => match Self::parse_data(msg.into()) {
-                            Ok(data) => {
-                                data_tx.send(data).unwrap();
-                            }
-                            Err(e) => {
-                                log::error!("error occurred while parsing ws data: {}", e)
-                            }
-                        },
-                        Err(e) => {
-                            log::error!("error occured while ws recv: {}", e)
-                        }
-                    }
-                }
-                signal = signal_rx.recv() => {
-                    if let Some(Signal::Close(tx)) = signal {
-                        tx.send(Ok(())).unwrap();
-                        break Ok(())
-                    }
-                }
-            }
         }
     }
 }

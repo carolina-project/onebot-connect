@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use hyper::{header::AUTHORIZATION, StatusCode};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_tungstenite::WebSocketStream;
-use ws::WSTaskHandle;
+use ws::WSHandler;
+
+use crate::common::ws::WSTask;
 
 use super::*;
 
@@ -26,7 +28,7 @@ impl<A: ToSocketAddrs> Create for WSReConnect<A> {
         let listener = TcpListener::bind(self.addr).await?;
 
         let (stream, addr) = listener.accept().await?;
-        let ws_stream = tokio_tungstenite::accept_hdr_async(
+        let ws = tokio_tungstenite::accept_hdr_async(
             stream,
             |req: &http_lib::Request<()>, response: http_lib::Response<()>| {
                 let Some(token) = &self.access_token else {
@@ -54,11 +56,11 @@ impl<A: ToSocketAddrs> Create for WSReConnect<A> {
         )
         .await?;
 
-        let (_task_handle, conn_handle) = WSTaskHandle::create(ws_stream);
+        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler::default()).await;
 
         Ok((
-            RxMessageSource::new(conn_handle.msg_rx),
-            TxImplProvider::new(conn_handle.cmd_tx),
+            RxMessageSource::new(msg_rx),
+            TxImplProvider::new(cmd_tx),
             addr,
         ))
     }

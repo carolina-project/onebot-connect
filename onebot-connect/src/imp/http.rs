@@ -28,7 +28,6 @@ type EventQueue = Arc<Mutex<VecDeque<Event>>>;
 type RespMap = FxHashMap<ActionEcho, oneshot::Sender<RespData>>;
 type ActionResponder = oneshot::Sender<RespData>;
 type ActionRecv = (ImpAction, ActionResponder);
-type ActionRespRx = mpsc::UnboundedReceiver<(ImpAction, ActionResponder)>;
 
 #[derive(Default)]
 struct HttpHandler {
@@ -38,7 +37,6 @@ impl CmdHandler<Command, RecvMessage> for HttpHandler {
     async fn handle_cmd(
         &mut self,
         cmd: Command,
-        msg_tx: mpsc::UnboundedSender<RecvMessage>,
         state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
         match cmd {
