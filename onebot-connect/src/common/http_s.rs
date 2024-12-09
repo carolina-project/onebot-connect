@@ -5,7 +5,7 @@ use http::{
     header::{AUTHORIZATION, CONTENT_TYPE},
     StatusCode,
 };
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use onebot_connect_interface::ClosedReason;
@@ -32,6 +32,23 @@ pub(crate) fn mk_resp(status: hyper::StatusCode, data: Option<impl Into<Bytes>>)
         .unwrap()
 }
 
+pub(crate) async fn parse_req<B>(req: Req) -> Result<B, Response>
+where
+    B: DeserializeOwned + Send + 'static,
+{
+    let bytes = req.into_body().collect().await.map_err(|e| {
+        log::debug!("error while collecting data: {}", e);
+        mk_resp(StatusCode::BAD_REQUEST, None::<String>)
+    })?;
+    match serde_json::from_slice::<B>(&bytes.to_bytes()) {
+        Ok(action) => Ok(action),
+        Err(e) => {
+            log::debug!("error while deserializing data: {}", e);
+            Err(mk_resp(StatusCode::BAD_REQUEST, None::<String>))
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct ReqQuery<'a> {
     pub access_token: &'a str,
@@ -46,32 +63,55 @@ type HttpConfShared = Arc<RwLock<HttpConfig>>;
 
 pub(crate) type HttpResponder<B, R> = (B, oneshot::Sender<HttpResponse<R>>);
 
-pub enum HttpResponse<R: Serialize + Send + 'static> {
+pub enum HttpResponse<R>
+where
+    R: Serialize + Send + 'static,
+{
     Ok(R),
-    Failed { status: StatusCode },
+    Other { status: StatusCode },
 }
 
-pub(self) trait ReqProc: Clone + Send + Sync + 'static {
+pub(crate) trait HttpReqProc: Clone + Send + Sync + 'static {
     type Output;
 
-    fn process_request(&self, req: Req) -> Result<Self::Output, Response>;
+    fn process_request(
+        &self,
+        req: Req,
+    ) -> impl Future<Output = Result<Self::Output, Response>> + Send + '_;
 }
 
-struct HttpServer<
-    Body: DeserializeOwned + Send + 'static,
+impl<R, F, FR> HttpReqProc for F
+where
+    F: (Fn(Req) -> FR) + Clone + Send + Sync + 'static,
+    FR: Future<Output = Result<R, Response>> + Send + 'static,
+{
+    type Output = R;
+
+    #[inline]
+    fn process_request(
+        &self,
+        req: Req,
+    ) -> impl Future<Output = Result<Self::Output, Response>> + Send + '_ {
+        self(req)
+    }
+}
+
+struct HttpServer<Body, Resp, Proc>
+where
+    Body: Send + 'static,
     Resp: Serialize + Send + 'static,
-    Proc: ReqProc<Output = Body>,
-> {
+    Proc: HttpReqProc<Output = Body>,
+{
     config: HttpConfShared,
     body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
     proc: Proc,
 }
 
-impl<
-        B: DeserializeOwned + Send + 'static,
-        R: Serialize + Send + 'static,
-        P: ReqProc<Output = B> + Send + 'static,
-    > Clone for HttpServer<B, R, P>
+impl<B, R, P> Clone for HttpServer<B, R, P>
+where
+    B: Send + 'static,
+    R: Serialize + Send + 'static,
+    P: HttpReqProc<Output = B> + Send + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -82,11 +122,11 @@ impl<
     }
 }
 
-impl<
-        B: DeserializeOwned + Send + 'static,
-        R: Serialize + Send + 'static,
-        P: ReqProc<Output = B> + Send + 'static,
-    > HttpServer<B, R, P>
+impl<B, R, P> HttpServer<B, R, P>
+where
+    B: Send + 'static,
+    R: Serialize + Send + 'static,
+    P: HttpReqProc<Output = B> + Send + 'static,
 {
     pub fn new(
         body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
@@ -141,7 +181,7 @@ impl<
             return Err(mk_resp(StatusCode::NOT_ACCEPTABLE, None::<String>));
         }
 
-        let body: B = proc.process_request(req)?;
+        let body: B = proc.process_request(req).await?;
 
         let (tx, rx) = oneshot::channel();
         body_tx.send((body, tx)).unwrap();
@@ -156,7 +196,7 @@ impl<
                 })?;
                 Ok(mk_resp(StatusCode::OK, Some(resp)))
             }
-            HttpResponse::Failed { status } => Ok(mk_resp(status, None::<Vec<u8>>)),
+            HttpResponse::Other { status } => Ok(mk_resp(status, None::<Vec<u8>>)),
         }
     }
 }
@@ -178,9 +218,15 @@ where
 {
 }
 
+/// HttpServerTask is responsible for managing the lifecycle of the HTTP server and handling incoming requests.
+/// `Body`: Http request body
+/// `Resp`: Http response
+/// `Cmd`: Commands send to http server
+/// `Msg`: Messages produced by http server
+/// `Handler`: Handling http server, converting request body into message, process commands.
 pub(crate) struct HttpServerTask<Body, Resp, Cmd, Msg, Handler>
 where
-    Body: DeserializeOwned + Send + 'static,
+    Body: Send + 'static,
     Resp: Serialize + Send + 'static,
     Handler: HttpTaskHandler<Body, Resp, Cmd, Msg>,
 {
@@ -190,12 +236,12 @@ where
 impl<B, R, C, M, H> HttpServerTask<B, R, C, M, H>
 where
     H: HttpTaskHandler<B, R, C, M>,
-    B: DeserializeOwned + Send + 'static,
+    B: Send + 'static,
     R: Serialize + Send + 'static,
     M: Send + 'static,
     C: Send + 'static,
 {
-    pub async fn create<Proc: ReqProc<Output = B>>(
+    pub async fn create<Proc: HttpReqProc<Output = B>>(
         addr: impl Into<SocketAddr>,
         config: HttpConfig,
         handler: H,
@@ -228,15 +274,15 @@ where
         req_proc: Proc,
     ) -> Result<(), AllErr>
     where
-        Proc: ReqProc<Output = B> + Send + 'static,
+        Proc: HttpReqProc<Output = B> + Send + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
         let serv = HttpServer::new(body_tx, config, req_proc);
 
         async fn handle_http<
-            Body: DeserializeOwned + Send + 'static,
+            Body: Send + 'static,
             Resp: Serialize + Send + 'static,
-            Proc: ReqProc<Output = Body>,
+            Proc: HttpReqProc<Output = Body>,
         >(
             conn: TcpStream,
             serv: HttpServer<Body, Resp, Proc>,

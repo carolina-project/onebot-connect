@@ -4,19 +4,14 @@ use fxhash::FxHashMap;
 use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
 use onebot_types::ob12::{
     self,
-    action::{RespData, RespStatus, RetCode},
+    action::{Action, RespData, RespStatus, RetCode},
 };
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
 use serde_value::Value;
 use tokio::sync::oneshot;
 
-use crate::
-    common::{
-        http_s::{HttpConfig, HttpServerTask},
-        CloseHandler, CmdHandler, RecvHandler,
-    }
-;
+use crate::common::{http_s::*, *};
 
 extern crate http as http_lib;
 
@@ -25,20 +20,16 @@ use crate::Error as AllErr;
 
 type EventQueue = Arc<Mutex<VecDeque<Event>>>;
 
-type RespMap = FxHashMap<ActionEcho, oneshot::Sender<RespData>>;
-type ActionResponder = oneshot::Sender<RespData>;
-type ActionRecv = (ImpAction, ActionResponder);
+type ActionResponder = oneshot::Sender<HttpResponse<RespData>>;
+type RespMap = FxHashMap<ActionEcho, ActionResponder>;
+type ActionRecv = (Action, ActionResponder);
 
 #[derive(Default)]
 struct HttpHandler {
     resp_map: RespMap,
 }
 impl CmdHandler<Command, RecvMessage> for HttpHandler {
-    async fn handle_cmd(
-        &mut self,
-        cmd: Command,
-        state: crate::common::ConnState,
-    ) -> Result<(), crate::Error> {
+    async fn handle_cmd(&mut self, cmd: Command, state: ConnState) -> Result<(), crate::Error> {
         match cmd {
             Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
             Command::SetConfig((key, _), tx) => tx
@@ -70,7 +61,9 @@ impl CmdHandler<Command, RecvMessage> for HttpHandler {
                             echo,
                         },
                     };
-                    responder.send(response).map_err(|_| AllErr::ChannelClosed)
+                    responder
+                        .send(HttpResponse::Ok(response))
+                        .map_err(|_| AllErr::ChannelClosed)
                 } else {
                     log::error!("cannot find action: {:?}", echo);
                     Ok(())
@@ -102,10 +95,18 @@ impl RecvHandler<ActionRecv, RecvMessage> for HttpHandler {
             }
         }
         let (action, resp_tx) = recv;
-        self.resp_map.insert(random_echo(&self.resp_map), resp_tx);
+        let echo = match action.echo {
+            Some(echo) => ActionEcho::Outer(echo),
+            None => random_echo(&self.resp_map),
+        };
+        self.resp_map.insert(echo.clone(), resp_tx);
 
         msg_tx
-            .send(RecvMessage::Action(action))
+            .send(RecvMessage::Action(ImpAction {
+                action: action.action,
+                echo,
+                self_: action.self_,
+            }))
             .map_err(|_| AllErr::ChannelClosed)
     }
 }
@@ -135,6 +136,7 @@ impl HttpCreate {
     }
 }
 
+
 impl Create for HttpCreate {
     type Error = OCError;
     type Source = RxMessageSource;
@@ -143,7 +145,7 @@ impl Create for HttpCreate {
 
     async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let (cmd_tx, msg_rx) =
-            HttpServerTask::create(self.addr, self.config, HttpHandler::default()).await;
+            HttpServerTask::create(self.addr, self.config, HttpHandler::default(), parse_req).await;
 
         Ok((
             RxMessageSource::new(msg_rx),

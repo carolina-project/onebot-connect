@@ -1,6 +1,10 @@
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use onebot_types::ob12::{self, action::RetCode, event::Event, BotSelf};
+use onebot_types::ob12::{
+    action::{ActionType, RetCode},
+    event::Event,
+    BotSelf,
+};
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 use tokio::sync::oneshot;
@@ -18,16 +22,17 @@ impl<T: Impl> CloseError<T> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 pub enum ActionEcho {
     Inner(u64),
     Outer(String),
 }
+/// **Inner** Action representation
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Action {
-    action: ob12::action::Action,
-    echo: ActionEcho,
-    self_: Option<BotSelf>,
+    pub action: ActionType,
+    pub echo: ActionEcho,
+    pub self_: Option<BotSelf>,
 }
 pub enum ActionResponse {
     Ok(Value),

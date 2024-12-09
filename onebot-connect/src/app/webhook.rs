@@ -1,11 +1,7 @@
 use super::*;
 extern crate http as http_lib;
-
 use crate::{
-    common::{
-        http_s::{HttpConfig, HttpResponse, HttpServerTask},
-        CloseHandler, CmdHandler, RecvHandler,
-    },
+    common::{http_s::*, *},
     Error as AllErr,
 };
 
@@ -64,10 +60,10 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
     }
 }
 
-impl RecvHandler<(Event, oneshot::Sender<HttpResponse<Vec<Action>>>), RecvMessage> for WHandler {
+impl RecvHandler<(Event, EventResponder), RecvMessage> for WHandler {
     async fn handle_recv(
         &mut self,
-        recv: (Event, oneshot::Sender<HttpResponse<Vec<Action>>>),
+        recv: (Event, EventResponder),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
@@ -115,7 +111,7 @@ impl Connect for WebhookConnect {
 
     async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
         let (cmd_tx, msg_rx) =
-            HttpServerTask::create(self.addr, self.config, WHandler::default()).await;
+            HttpServerTask::create(self.addr, self.config, WHandler::default(), parse_req).await;
 
         Ok((
             RxMessageSource::new(msg_rx),
