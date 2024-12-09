@@ -128,7 +128,7 @@ where
         if let Err(e) = handler.handle_close(res.clone(), msg_tx).await {
             log::error!("error occurred while handling conn close: {}", e);
         }
-        res.map_err(AllErr::desc)
+        res.map_err(AllErr::other)
     }
 
     /// Handles sending messages over the WebSocket connection.

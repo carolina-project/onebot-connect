@@ -279,6 +279,6 @@ where
         if let Err(e) = handler.handle_close(result.clone(), msg_tx).await {
             log::error!("error occurred while handling conn close: {}", e);
         }
-        result.map_err(AllErr::desc)
+        result.map_err(AllErr::other)
     }
 }

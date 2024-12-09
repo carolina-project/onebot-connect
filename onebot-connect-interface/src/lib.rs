@@ -1,4 +1,4 @@
-use std::error::Error as ErrTrait;
+use std::fmt::{Debug, Display};
 
 use onebot_types::ob12::action::RespError;
 use serde::{Deserialize, Serialize};
@@ -24,17 +24,17 @@ pub enum Error {
     #[error(transparent)]
     Resp(#[from] RespError),
     #[error("serialize error: {0}")]
-    Serialize(Box<dyn ErrTrait + Send>),
+    Serialize(String),
     #[error("deserialize error: {0}")]
-    Deserialize(Box<dyn ErrTrait + Send>),
+    Deserialize(String),
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error("not supported: {0}")]
     NotSupported(String),
     #[error("closed: {0}")]
-    Closed(Box<dyn ErrTrait + Send>),
-    #[error(transparent)]
-    Other(Box<dyn ErrTrait + Send>),
+    Closed(String),
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -43,30 +43,30 @@ pub enum ConfigError {
     TypeMismatch(String, String),
     #[error("unknown config key `{0}`")]
     UnknownKey(String),
-    #[error(transparent)]
-    Other(Box<dyn ErrTrait + Send>),
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type ActionResult<T> = Result<T, Error>;
 
 impl Error {
-    pub fn other<T: ErrTrait + Send + 'static>(err: T) -> Self {
-        Self::Other(Box::new(err))
+    pub fn other<T: Display>(e: T) -> Self {
+        Self::Other(e.to_string())
     }
 
-    pub fn serialize<E: serde::ser::Error + Send + 'static>(e: E) -> Self {
-        Self::Serialize(Box::new(e))
+    pub fn serialize<E: Display>(e: E) -> Self {
+        Self::Serialize(e.to_string())
     }
 
-    pub fn deserialize<E: serde::de::Error + Send + 'static>(e: E) -> Self {
-        Self::Deserialize(Box::new(e))
+    pub fn deserialize<E: Display>(e: E) -> Self {
+        Self::Deserialize(e.to_string())
     }
 
-    pub fn not_supported(msg: impl Into<String>) -> Self {
-        Self::NotSupported(msg.into())
+    pub fn not_supported<E: Display>(e: E) -> Self {
+        Self::NotSupported(e.to_string())
     }
 
-    pub fn closed<E: ErrTrait + Send + 'static>(e: E) -> Self {
-        Self::Closed(Box::new(e))
+    pub fn closed<E: Display>(e: E) -> Self {
+        Self::Closed(e.to_string())
     }
 }

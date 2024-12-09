@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt::Display, io};
 
 #[cfg(feature = "app")]
 pub mod app;
@@ -27,12 +27,12 @@ pub enum Error {
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
     #[error("{0}")]
-    Desc(String),
+    Other(String),
 }
 
 impl Error {
-    pub fn desc(msg: impl Into<String>) -> Self {
-        Self::Desc(msg.into())
+    pub fn other<T: Display>(e: T) -> Self {
+        Self::Other(e.to_string())
     }
 }
 
@@ -48,5 +48,4 @@ impl RecvError {
     pub fn invalid_data(msg: impl Into<String>) -> RecvError {
         Self::InvalidData(msg.into())
     }
-
 }
