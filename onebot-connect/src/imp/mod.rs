@@ -1,4 +1,4 @@
-#[cfg(feature = "http")]
+#[cfg(feature = "hyper")]
 pub mod http;
 #[cfg(feature = "http")]
 pub mod webhook;

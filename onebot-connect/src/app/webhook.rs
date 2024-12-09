@@ -3,7 +3,7 @@ extern crate http as http_lib;
 
 use crate::{
     common::{
-        http_s::{HttpConfig, HttpServerTask},
+        http_s::{HttpConfig, HttpResponse, HttpServerTask},
         CloseHandler, CmdHandler, RecvHandler,
     },
     Error as AllErr,
@@ -14,7 +14,7 @@ use onebot_types::ob12::{action::Action, event::Event};
 use parking_lot::Mutex;
 use std::{net::SocketAddr, sync::Arc};
 
-type EventResponder = oneshot::Sender<Vec<Action>>;
+type EventResponder = oneshot::Sender<HttpResponse<Vec<Action>>>;
 
 /// Authorization header and `access_token` query param, choose one to use
 
@@ -36,17 +36,16 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
                 .map_err(|_| AllErr::ChannelClosed),
             Command::Respond(id, actions) => {
                 if let Some(tx) = self.actions_map.remove(&id) {
-                    tx.send(
-                        actions
-                            .into_iter()
-                            .map(|ActionArgs { action, self_ }| Action {
-                                action,
-                                echo: None,
-                                self_,
-                            })
-                            .collect(),
-                    )
-                    .map_err(|_| AllErr::ChannelClosed)?;
+                    let actions = actions
+                        .into_iter()
+                        .map(|ActionArgs { action, self_ }| Action {
+                            action,
+                            echo: None,
+                            self_,
+                        })
+                        .collect();
+                    tx.send(HttpResponse::Ok(actions))
+                        .map_err(|_| AllErr::ChannelClosed)?;
                 } else {
                     log::error!("cannot find event: {}", id);
                 }
@@ -65,10 +64,10 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
     }
 }
 
-impl RecvHandler<(Event, oneshot::Sender<Vec<Action>>), RecvMessage> for WHandler {
+impl RecvHandler<(Event, oneshot::Sender<HttpResponse<Vec<Action>>>), RecvMessage> for WHandler {
     async fn handle_recv(
         &mut self,
-        recv: (Event, oneshot::Sender<Vec<Action>>),
+        recv: (Event, oneshot::Sender<HttpResponse<Vec<Action>>>),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {

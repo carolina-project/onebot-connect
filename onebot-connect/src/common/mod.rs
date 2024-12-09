@@ -1,4 +1,4 @@
-#[cfg(feature = "http")]
+#[cfg(feature = "hyper")]
 pub mod http_s;
 #[cfg(feature = "ws")]
 pub mod ws;

@@ -6,11 +6,12 @@ use onebot_connect_interface::{
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(feature = "compat")]
 pub mod compat;
 
 #[cfg(feature = "http")]
 pub mod http;
-#[cfg(feature = "http")]
+#[cfg(feature = "hyper")]
 pub mod webhook;
 
 #[cfg(feature = "ws")]

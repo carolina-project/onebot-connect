@@ -41,9 +41,16 @@ pub(crate) struct HttpConfig {
 
 type HttpConfShared = Arc<RwLock<HttpConfig>>;
 
+pub(crate) type HttpResponder<B, R> = (B, oneshot::Sender<HttpResponse<R>>);
+
+pub enum HttpResponse<R: Serialize + Send + 'static> {
+    Ok(R),
+    Failed { status: StatusCode },
+}
+
 struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
     config: HttpConfShared,
-    body_tx: mpsc::UnboundedSender<(Body, oneshot::Sender<Resp>)>,
+    body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
 }
 
 impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> Clone
@@ -59,7 +66,7 @@ impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> Clone
 
 impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpServer<B, R> {
     pub fn new(
-        body_tx: mpsc::UnboundedSender<(B, oneshot::Sender<R>)>,
+        body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
         config: HttpConfig,
     ) -> Self {
         Self {
@@ -111,31 +118,39 @@ impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpSe
         let (tx, rx) = oneshot::channel();
         body_tx.send((body, tx)).unwrap();
         // acquire response
-        let resp = serde_json::to_vec(&rx.await.unwrap()).map_err(|e| {
-            mk_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(format!("error while serializing response: {}", e)),
-            )
-        })?;
-
-        Ok(mk_resp(StatusCode::OK, Some(resp)))
+        match rx.await.unwrap() {
+            HttpResponse::Ok(data) => {
+                let resp = serde_json::to_vec(&data).map_err(|e| {
+                    mk_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Some(format!("error while serializing response: {}", e)),
+                    )
+                })?;
+                Ok(mk_resp(StatusCode::OK, Some(resp)))
+            }
+            HttpResponse::Failed { status } => Ok(mk_resp(status, None::<Vec<u8>>)),
+        }
     }
 }
 
 pub(crate) trait HttpTaskHandler<Body, Resp, Cmd, Msg>:
     CmdHandler<Cmd, Msg>
-    + RecvHandler<(Body, oneshot::Sender<Resp>), Msg>
+    + RecvHandler<(Body, oneshot::Sender<HttpResponse<Resp>>), Msg>
     + CloseHandler<Msg>
     + Send
     + 'static
+where
+    Resp: Send + Serialize + 'static,
 {
 }
-impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T where
+impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T
+where
     T: CmdHandler<C, M>
-        + RecvHandler<(B, oneshot::Sender<R>), M>
+        + RecvHandler<HttpResponder<B, R>, M>
         + CloseHandler<M>
         + Send
-        + 'static
+        + 'static,
+    R: Send + Serialize + 'static,
 {
 }
 
@@ -160,8 +175,7 @@ where
         addr: impl Into<SocketAddr>,
         config: HttpConfig,
         handler: H,
-    ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>)
-    {
+    ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>) {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
@@ -182,7 +196,7 @@ where
 
     async fn server_task(
         addr: SocketAddr,
-        body_tx: mpsc::UnboundedSender<(B, oneshot::Sender<R>)>,
+        body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
         mut signal_rx: mpsc::UnboundedReceiver<Signal>,
         config: HttpConfig,
     ) -> Result<(), AllErr> {
@@ -243,7 +257,7 @@ where
     }
 
     async fn manage_task(
-        mut body_rx: mpsc::UnboundedReceiver<(B, oneshot::Sender<R>)>,
+        mut body_rx: mpsc::UnboundedReceiver<HttpResponder<B, R>>,
         msg_tx: mpsc::UnboundedSender<M>,
         mut cmd_rx: mpsc::UnboundedReceiver<C>,
         signal_tx: mpsc::UnboundedSender<Signal>,

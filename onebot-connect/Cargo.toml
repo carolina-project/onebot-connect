@@ -34,7 +34,7 @@ tokio-tungstenite = { version = "0.24", optional = true }
 reqwest = { version = "0.12", optional = true, features = ["json"]}
 http = { version = "1", optional = true }
 hyper = { version = "1", optional = true, default-features = false, features = ["server", "http1"]}
-hyper-util = { version = "0.1", optional = true }
+hyper-util = { version = "0.1", optional = true, features = ["tokio"]}
 http-body-util = { version = "0.1", optional = true}
 http-body = { version = "1", optional = true }
 
@@ -42,6 +42,7 @@ http-body = { version = "1", optional = true }
 default = []
 app = ["onebot-connect-interface/app"]
 imp = ["onebot-connect-interface/imp"]
+compat = ["onebot-types/compat"]
 hyper = ["dep:hyper", "dep:http", "dep:http-body-util", "dep:hyper-util"]
 ws = ["tokio-tungstenite", "dep:http"]
-http = ["reqwest", "hyper"]
+http = ["reqwest", "dep:http"]

@@ -4,10 +4,10 @@
 
 ## 协议转换
 
-由于OneBot11与12差异较大，所以只提供11转12的功能，并且OneBot11侧必须有**能够同时提供调用API和事件接收**的连接
+由于OneBot11与12差异较大，所以只提供11转12的功能，并且OneBot11侧必须有**能够同时提供调用API和事件接收能力**的连接
 
 以下连接能够满足要求:
 
-- HTTP + HTTP POST
-- 正向Websocket
-- 反向Websocket
+-   HTTP + HTTP POST
+-   正向Websocket
+-   反向Websocket
