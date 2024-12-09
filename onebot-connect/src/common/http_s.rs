@@ -1,8 +1,11 @@
 use std::{convert::Infallible, marker::PhantomData, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
-use http::{header::AUTHORIZATION, StatusCode};
-use http_body_util::{BodyExt, Full};
+use http::{
+    header::{AUTHORIZATION, CONTENT_TYPE},
+    StatusCode,
+};
+use http_body_util::Full;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use onebot_connect_interface::ClosedReason;
@@ -48,41 +51,66 @@ pub enum HttpResponse<R: Serialize + Send + 'static> {
     Failed { status: StatusCode },
 }
 
-struct HttpServer<Body: DeserializeOwned + Send + 'static, Resp: Serialize + Send + 'static> {
-    config: HttpConfShared,
-    body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
+pub(self) trait ReqProc: Clone + Send + Sync + 'static {
+    type Output;
+
+    fn process_request(&self, req: Req) -> Result<Self::Output, Response>;
 }
 
-impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> Clone
-    for HttpServer<B, R>
+struct HttpServer<
+    Body: DeserializeOwned + Send + 'static,
+    Resp: Serialize + Send + 'static,
+    Proc: ReqProc<Output = Body>,
+> {
+    config: HttpConfShared,
+    body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
+    proc: Proc,
+}
+
+impl<
+        B: DeserializeOwned + Send + 'static,
+        R: Serialize + Send + 'static,
+        P: ReqProc<Output = B> + Send + 'static,
+    > Clone for HttpServer<B, R, P>
 {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
             body_tx: self.body_tx.clone(),
+            proc: self.proc.clone(),
         }
     }
 }
 
-impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpServer<B, R> {
+impl<
+        B: DeserializeOwned + Send + 'static,
+        R: Serialize + Send + 'static,
+        P: ReqProc<Output = B> + Send + 'static,
+    > HttpServer<B, R, P>
+{
     pub fn new(
         body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
         config: HttpConfig,
+        proc: P,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             body_tx,
+            proc,
         }
     }
 
     async fn handle_req(self, req: Req) -> Result<Response, Response> {
-        let Self { config, body_tx } = self;
+        let Self {
+            config,
+            body_tx,
+            proc,
+        } = self;
         // check access token
-        let mut passed = false;
         if let Some((header_token, query_token)) = &config.read().authorization {
             if let Some(header) = req.headers().get(AUTHORIZATION) {
-                if header == header_token {
-                    passed = true;
+                if header != header_token {
+                    return Err(mk_resp(StatusCode::FORBIDDEN, None::<Vec<u8>>));
                 }
             } else if let Some(query) = req.uri().query() {
                 let params: ReqQuery = serde_qs::from_str(query).map_err(|e| {
@@ -91,29 +119,29 @@ impl<B: DeserializeOwned + Send + 'static, R: Serialize + Send + 'static> HttpSe
                         Some(format!("invalid request query: {}", e)),
                     )
                 })?;
-                if params.access_token == query_token {
-                    passed = true;
+                if params.access_token != query_token {
+                    return Err(mk_resp(StatusCode::FORBIDDEN, None::<Vec<u8>>));
                 }
+            } else {
+                return Err(mk_resp(StatusCode::UNAUTHORIZED, None::<Vec<u8>>));
             }
         }
 
-        if !passed {
-            return Err(mk_resp(StatusCode::UNAUTHORIZED, Some("Unauthorized")));
+        let Some(content_type) = req.headers().get(CONTENT_TYPE) else {
+            return Err(mk_resp(
+                StatusCode::BAD_REQUEST,
+                Some("missing header `Content-Type`"),
+            ));
+        };
+        if content_type
+            .to_str()
+            .map_err(|e| mk_resp(StatusCode::BAD_REQUEST, Some(e.to_string())))?
+            != "application/json"
+        {
+            return Err(mk_resp(StatusCode::NOT_ACCEPTABLE, None::<String>));
         }
 
-        let data = req.into_body().collect().await.map_err(|e| {
-            mk_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Some(format!("http body err: {e}")),
-            )
-        })?;
-
-        let body: B = serde_json::from_slice(&data.to_bytes()).map_err(|e| {
-            mk_resp(
-                StatusCode::BAD_REQUEST,
-                Some(format!("invalid data: {}", e)),
-            )
-        })?;
+        let body: B = proc.process_request(req)?;
 
         let (tx, rx) = oneshot::channel();
         body_tx.send((body, tx)).unwrap();
@@ -145,11 +173,7 @@ where
 }
 impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T
 where
-    T: CmdHandler<C, M>
-        + RecvHandler<HttpResponder<B, R>, M>
-        + CloseHandler<M>
-        + Send
-        + 'static,
+    T: CmdHandler<C, M> + RecvHandler<HttpResponder<B, R>, M> + CloseHandler<M> + Send + 'static,
     R: Send + Serialize + 'static,
 {
 }
@@ -171,10 +195,11 @@ where
     M: Send + 'static,
     C: Send + 'static,
 {
-    pub async fn create(
+    pub async fn create<Proc: ReqProc<Output = B>>(
         addr: impl Into<SocketAddr>,
         config: HttpConfig,
         handler: H,
+        req_proc: Proc,
     ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>) {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -186,6 +211,7 @@ where
             body_tx,
             signal_rx,
             config.clone(),
+            req_proc,
         ));
         tokio::spawn(Self::manage_task(
             body_rx, msg_tx, cmd_rx, signal_tx, handler,
@@ -194,38 +220,41 @@ where
         (cmd_tx, msg_rx)
     }
 
-    async fn server_task(
+    async fn server_task<Proc>(
         addr: SocketAddr,
         body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
         mut signal_rx: mpsc::UnboundedReceiver<Signal>,
         config: HttpConfig,
-    ) -> Result<(), AllErr> {
+        req_proc: Proc,
+    ) -> Result<(), AllErr>
+    where
+        Proc: ReqProc<Output = B> + Send + 'static,
+    {
         let listener = TcpListener::bind(addr).await?;
-        let serv = HttpServer::new(body_tx, config);
+        let serv = HttpServer::new(body_tx, config, req_proc);
 
         async fn handle_http<
             Body: DeserializeOwned + Send + 'static,
             Resp: Serialize + Send + 'static,
+            Proc: ReqProc<Output = Body>,
         >(
             conn: TcpStream,
-            serv: HttpServer<Body, Resp>,
+            serv: HttpServer<Body, Resp, Proc>,
         ) -> Result<(), AllErr> {
             let io = TokioIo::new(conn);
-
-            let serv_clone = serv.clone();
             tokio::task::spawn(async move {
                 if let Err(err) = http1::Builder::new()
                     .serve_connection(
                         io,
                         service_fn(|r| async {
                             Ok::<Response, Infallible>(
-                                serv_clone.clone().handle_req(r).await.unwrap_or_else(|e| e),
+                                serv.clone().handle_req(r).await.unwrap_or_else(|e| e),
                             )
                         }),
                     )
                     .await
                 {
-                    println!("Failed to serve connection: {:?}", err);
+                    log::error!("Failed to serve connection: {:?}", err);
                 }
             });
             Ok(())
