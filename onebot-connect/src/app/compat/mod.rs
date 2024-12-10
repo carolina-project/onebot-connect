@@ -3,6 +3,8 @@ use std::{fmt::Display, sync::Arc};
 use fxhash::FxHashMap;
 use onebot_types::{compat::message::IntoOB12SegAsync, ob11::Event};
 use parking_lot::RwLock;
+use serde::ser::Error;
+use serde_value::SerializerError;
 use uuid::Uuid;
 
 use crate::Error as AllErr;
@@ -19,54 +21,53 @@ pub mod http;
 pub mod ws;
 pub mod ws_re;
 
-pub enum OB11Recv {
+enum OB11Recv {
     Event(Event),
 }
 
-fn convert_seg<P, M>(msg: M, param: P) -> Result<ob12m::MessageSeg, AllErr>
+fn convert_seg<P, M>(msg: M, param: P) -> Result<ob12m::MessageSeg, SerializerError>
 where
     M: IntoOB12Seg<P>,
     <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
 {
-    msg.into_ob12(param)
-        .map_err(OCErr::serialize)?
+    msg.into_ob12(param)?
         .try_into()
-        .map_err(AllErr::other)
+        .map_err(SerializerError::custom)
 }
 
-async fn convert_seg_async<P, M>(msg: M, param: P) -> Result<ob12m::MessageSeg, AllErr>
+async fn convert_seg_async<P, M>(msg: M, param: P) -> Result<ob12m::MessageSeg, SerializerError>
 where
     M: IntoOB12SegAsync<P>,
     <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
 {
     msg.into_ob12(param)
-        .await
-        .map_err(OCErr::serialize)?
+        .await?
         .try_into()
-        .map_err(AllErr::other)
+        .map_err(SerializerError::custom)
 }
 
-fn convert_seg_default<M>(msg: M) -> Result<ob12m::MessageSeg, AllErr>
+fn convert_seg_default<M>(msg: M) -> Result<ob12m::MessageSeg, SerializerError>
 where
     M: IntoOB12Seg<()>,
     <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
 {
-    msg.into_ob12(())
-        .map_err(OCErr::serialize)?
+    msg.into_ob12(())?
         .try_into()
-        .map_err(AllErr::other)
+        .map_err(SerializerError::custom)
 }
 
 #[derive(Default, Clone)]
 struct AppDataInner {
     file_map: FxHashMap<Uuid, String>,
+    self_id: String,
 }
 
+/// Connection status of OneBot 11 connection
 #[derive(Default, Clone)]
 struct AppData(Arc<RwLock<AppDataInner>>);
 
 impl AppData {
-    async fn trace_file(self, name: String) -> String {
+    async fn trace_file(&self, name: String) -> String {
         let file_map = &mut self.0.write().file_map;
         let mut uuid;
         loop {
@@ -80,7 +81,10 @@ impl AppData {
         uuid.into()
     }
 
-    async fn ob11_to_ob12_seg(&self, msg: MessageSeg) -> Result<ob12m::MessageSeg, AllErr> {
+    async fn ob11_to_ob12_seg(
+        &self,
+        msg: MessageSeg,
+    ) -> Result<ob12m::MessageSeg, SerializerError> {
         let trace_fn = |name: String| async move { Ok(self.trace_file(name).await) };
         match msg {
             MessageSeg::Text(text) => convert_seg_default(text),
@@ -98,26 +102,26 @@ impl AppData {
             MessageSeg::Contact(contact) => convert_seg_default(contact),
             MessageSeg::Location(location) => convert_seg_default(location),
             MessageSeg::Music(music) => convert_seg_default(music),
-            MessageSeg::Reply(reply) => reply.into_ob12(None).unwrap().into(),
-            MessageSeg::Forward(forward) => forward.into_ob12(()).unwrap().into(),
-            MessageSeg::Node(forward_node) => forward_node.into_ob12(()).unwrap().into(),
-            MessageSeg::Xml(xml) => xml.into_ob12(()).unwrap().into(),
-            MessageSeg::Json(json) => json.into_ob12(()).unwrap().into(),
-            MessageSeg::Other(ob11::message::MessageSegRaw { r#type, data }) => {
-                if r#type != "file" {
-                    panic!("Unhandled message segment: {:?}: {:?}", r#type, data)
-                } else {
-                    ob12::MessageSeg::Other { r#type, data }
-                }
-            }
-        };
+            MessageSeg::Reply(reply) => convert_seg(reply, reply_user_id.map(|s| s.to_owned())),
+            MessageSeg::Forward(forward) => convert_seg_default(forward),
+            MessageSeg::Node(forward_node) => convert_seg_default(forward_node),
+            MessageSeg::Xml(xml) => convert_seg_default(xml),
+            MessageSeg::Json(json) => convert_seg_default(json),
+            seg => Err(SerializerError::custom(format!(
+                "unknown ob11 message seg: {:?}",
+                seg
+            ))),
+        }
     }
 
-    fn convert_msg_event(
+    async fn convert_msg_event(
         &self,
-        self_id: String,
         msg: MessageEvent,
-    ) -> Result<ob12e::MessageEvent, AllErr> {
-        msg.into_ob12((self_id))
+    ) -> Result<ob12e::EventType, AllErr> {
+        let msg_convert = |msg| async { self.ob11_to_ob12_seg(msg, reply_user_id.clone()).await };
+        Ok(msg
+            .into_ob12((self.0.read().self_id.clone(), msg_convert))
+            .await
+            .map_err(OCErr::serialize)?)
     }
 }

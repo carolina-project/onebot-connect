@@ -8,7 +8,7 @@ use onebot_connect_interface::ClosedReason;
 use onebot_connect_interface::Error as OCErr;
 use onebot_types::{
     compat::{event::IntoOB12EventAsync, message::IntoOB12Seg},
-    ob11::{event::MessageEvent, Event as OB11Event, MessageSeg},
+    ob11::{event::{EventKind, MessageEvent}, Event as OB11Event, MessageSeg},
     ob12::{event as ob12e, message as ob12m},
 };
 use parking_lot::RwLock;
@@ -40,7 +40,10 @@ impl RecvHandler<(Event, HttpPostResponder), HttpPostRecv> for HttpPostHandler {
     ) -> Result<(), crate::Error> {
         let (event, respond) = recv;
         match event.kind {
-            _ => {}
+            EventKind::Message(_) => todo!(),
+            EventKind::Meta(_) => todo!(),
+            EventKind::Request(_) => todo!(),
+            EventKind::Notice(_) => todo!(),
         }
     }
 }
@@ -48,3 +51,4 @@ impl RecvHandler<(Event, HttpPostResponder), HttpPostRecv> for HttpPostHandler {
 impl CmdHandler<HttpPostCommand, HttpPostRecv> for HttpPostHandler {}
 
 impl CloseHandler<HttpPostRecv> for HttpPostHandler {}
+
