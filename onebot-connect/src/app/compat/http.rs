@@ -1,11 +1,21 @@
+
 use super::*;
-use crate::common::{http_s::HttpResponse, CloseHandler, CmdHandler, RecvHandler};
+use crate::{
+    common::{http_s::HttpResponse, *},
+    Error as AllErr,
+};
 use onebot_connect_interface::ClosedReason;
-use onebot_types::ob11::Event as OB11Event;
-use tokio::sync::oneshot;
+use onebot_connect_interface::Error as OCErr;
+use onebot_types::{
+    compat::{event::IntoOB12EventAsync, message::IntoOB12Seg},
+    ob11::{event::MessageEvent, Event as OB11Event, MessageSeg},
+    ob12::{event as ob12e, message as ob12m},
+};
+use parking_lot::RwLock;
+use tokio::sync::{mpsc, oneshot};
+
 
 // OneBot 11 HTTP POST side
-
 pub enum HttpPostRecv {
     Event(OB11Event),
     Close(Result<ClosedReason, String>),
@@ -14,13 +24,26 @@ pub enum HttpPostRecv {
 type HttpPostResponder = oneshot::Sender<HttpResponse<()>>;
 
 pub enum HttpPostCommand {
-    Close
+    Close,
 }
 
+pub struct HttpPostHandler {
+    data: AppData,
+}
 
-pub struct HttpPostHandler;
-
-impl RecvHandler<(Event, HttpPostResponder), HttpPostRecv> for HttpPostHandler {}
+impl RecvHandler<(Event, HttpPostResponder), HttpPostRecv> for HttpPostHandler {
+    async fn handle_recv(
+        &mut self,
+        recv: (Event, HttpPostResponder),
+        msg_tx: mpsc::UnboundedSender<HttpPostRecv>,
+        state: ConnState,
+    ) -> Result<(), crate::Error> {
+        let (event, respond) = recv;
+        match event.kind {
+            _ => {}
+        }
+    }
+}
 
 impl CmdHandler<HttpPostCommand, HttpPostRecv> for HttpPostHandler {}
 
