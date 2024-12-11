@@ -3,11 +3,91 @@ pub mod http_s;
 #[cfg(feature = "ws")]
 pub mod ws;
 
-use std::{future::Future, sync::Arc};
+#[cfg(feature = "storage")]
+pub mod storage;
 
+use std::{fmt::Display, future::Future, path::PathBuf, sync::Arc};
+
+use http::HeaderMap;
 use onebot_connect_interface::ClosedReason;
+use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, UploadFileReq};
 use parking_lot::RwLock;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use uuid::Uuid;
+
+#[derive(Clone)]
+pub struct UrlUpload {
+    pub url: String,
+    pub headers: Option<HeaderMap>,
+}
+
+#[derive(Clone)]
+pub enum UploadKind {
+    Url(UrlUpload),
+    Path(PathBuf),
+    Data(bytes::Bytes),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum UploadError {
+    #[cfg(feature = "storage")]
+    #[error(transparent)]
+    Fs(#[from] storage::FsError),
+    #[cfg(feature = "http")]
+    #[error(transparent)]
+    Http(#[from] reqwest::Error),
+    #[error("file not exists: {0}")]
+    NotExists(Uuid),
+    #[error(transparent)]
+    Uuid(#[from] uuid::Error),
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl UploadError {
+    pub fn other<E: Display>(e: E) -> Self {
+        Self::Other(e.to_string())
+    }
+
+    pub fn unsupported<E: Display>(e: E) -> Self {
+        Self::Unsupported(e.to_string())
+    }
+}
+
+pub trait UploadStorage: Send + Sync {
+    fn upload(
+        &self,
+        file_name: impl AsRef<str>,
+        upload: UploadKind,
+    ) -> impl Future<Output = Result<Uuid, UploadError>>;
+
+    fn upload_fragmented(
+        &self,
+        upload: UploadFileReq,
+    ) -> impl Future<Output = Result<Option<Uuid>, UploadError>>;
+
+    fn get_url(
+        &self,
+        uuid: &Uuid,
+    ) -> impl Future<Output = Result<UrlUpload, UploadError>>;
+
+    fn get_path(
+        &self,
+        uuid: &Uuid,
+    ) -> impl Future<Output = Result<PathBuf, UploadError>>;
+
+    fn get_data(
+        &self,
+        uuid: &Uuid,
+    ) -> impl Future<Output = Result<bytes::Bytes, UploadError>>;
+
+    fn get_fragmented(
+        &self,
+        get: GetFileFragmented,
+    ) -> impl Future<Output = Result<GetFileFrag, UploadError>>;
+}
 
 #[derive(Debug)]
 struct ConnStateInner {

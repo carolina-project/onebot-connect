@@ -149,7 +149,7 @@ impl WebhookApp {
         }
     }
 }
-impl App for WebhookApp {
+impl OBApp for WebhookApp {
     fn response_supported(&self) -> bool {
         false
     }
@@ -201,7 +201,7 @@ impl WebhookAppProvider {
         self.event_id = Some(id);
     }
 }
-impl AppProvider for WebhookAppProvider {
+impl OBAppProvider for WebhookAppProvider {
     type Output = WebhookApp;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {

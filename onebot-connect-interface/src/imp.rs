@@ -16,7 +16,7 @@ pub struct CloseError<T> {
     pub handle: T,
     pub err: Error,
 }
-impl<T: Impl> CloseError<T> {
+impl<T: OBImpl> CloseError<T> {
     pub fn new(handle: T, err: Error) -> Self {
         Self { handle, err }
     }
@@ -66,7 +66,7 @@ pub trait MessageSource {
     fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
 }
 
-pub trait Impl {
+pub trait OBImpl {
     fn send_event_impl(&self, event: Event) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     fn respond(
@@ -77,8 +77,8 @@ pub trait Impl {
 }
 
 /// Trait for providing event transmitters.
-pub trait ImplProvider {
-    type Output: Impl;
+pub trait OBImplProvider {
+    type Output: OBImpl;
 
     fn provide(&mut self) -> Result<Self::Output, Error>;
 }
@@ -93,7 +93,7 @@ impl<T: MessageSource> MessageSourceDyn for T {
     }
 }
 
-pub trait ImplDyn {
+pub trait OBImplDyn {
     fn send_event_impl(
         &self,
         event: Event,
@@ -106,7 +106,7 @@ pub trait ImplDyn {
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 }
 
-impl<T: Impl + Send + 'static> ImplDyn for T {
+impl<T: OBImpl + Send + 'static> OBImplDyn for T {
     fn send_event_impl(
         &self,
         event: Event,
@@ -126,7 +126,7 @@ impl<T: Impl + Send + 'static> ImplDyn for T {
 pub trait Create {
     type Error: std::error::Error;
     type Source: MessageSource;
-    type Provider: ImplProvider;
+    type Provider: OBImplProvider;
     type Message: Debug;
 
     fn create(

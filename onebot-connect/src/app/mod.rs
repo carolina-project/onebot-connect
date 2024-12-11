@@ -1,6 +1,6 @@
 use fxhash::FxHashMap;
 use onebot_connect_interface::{
-    app::{ActionArgs, App, AppProvider, Command, MessageSource, RecvMessage},
+    app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
     ActionResult, Error as OCError,
 };
 use rand::Rng;
@@ -18,6 +18,13 @@ pub mod webhook;
 pub mod ws;
 #[cfg(feature = "ws")]
 pub mod ws_re;
+
+#[cfg(feature = "http")]
+pub use http::*;
+#[cfg(feature = "hyper")]
+pub use webhook::*;
+#[cfg(feature = "ws")]
+pub use {ws::WSConnect, ws_re::WSReConnect};
 
 pub(crate) static ACTION_ECHO_CHARSET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -66,7 +73,7 @@ impl TxAppProvider {
         Self { tx }
     }
 }
-impl AppProvider for TxAppProvider {
+impl OBAppProvider for TxAppProvider {
     type Output = TxAppSide;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
@@ -83,7 +90,7 @@ impl TxAppSide {
         Self { tx }
     }
 }
-impl App for TxAppSide {
+impl OBApp for TxAppSide {
     async fn send_action_impl(
         &self,
         action: onebot_types::ob12::action::ActionType,

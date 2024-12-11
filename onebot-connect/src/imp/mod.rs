@@ -26,7 +26,7 @@ impl TxImpl {
         Self { tx }
     }
 }
-impl Impl for TxImpl {
+impl OBImpl for TxImpl {
     async fn send_event_impl(&self, event: Event) -> Result<(), OCError> {
         self.tx.send(Command::Event(event)).map_err(OCError::closed)
     }
@@ -46,7 +46,7 @@ impl TxImplProvider {
         Self { tx }
     }
 }
-impl ImplProvider for TxImplProvider {
+impl OBImplProvider for TxImplProvider {
     type Output = TxImpl;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {

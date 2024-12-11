@@ -76,8 +76,8 @@ mod recv {
     }
 
     /// OneBot app side provider
-    pub trait AppProvider {
-        type Output: App;
+    pub trait OBAppProvider {
+        type Output: OBApp;
 
         /// Provides a OneBot app instance.
         fn provide(&mut self) -> Result<Self::Output, Error>;
@@ -90,7 +90,7 @@ mod recv {
         /// Message after connection established successfully.
         type Message: Debug;
         /// Client for applcation to call.
-        type Provider: AppProvider;
+        type Provider: OBAppProvider;
         /// Message source for receiving messages.
         type Source: MessageSource;
 
@@ -108,7 +108,7 @@ use serde::{Deserialize, Serialize};
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
-pub trait App {
+pub trait OBApp: Send + Sync {
     /// Checks if the client supports action response.
     /// For example, WebSocket and Http supports response, WebHook doesn't.
     fn response_supported(&self) -> bool {
@@ -143,7 +143,9 @@ pub trait App {
     }
 
     /// Clone app client for multi-thread usage.
-    fn clone_app(&self) -> Self;
+    fn clone_app(&self) -> Self
+    where
+        Self: 'static;
 
     /// App client releasing logic, such as sending actions stored.
     fn release(&mut self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
@@ -152,7 +154,7 @@ pub trait App {
 }
 
 /// Extension trait for `App` to provide dynamic dispatching capabilities
-pub trait AppDyn {
+pub trait AppDyn: Send + Sync {
     fn response_supported(&self) -> bool {
         true
     }
@@ -168,7 +170,7 @@ pub trait AppDyn {
         key: &'b str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
 
-    fn clone_app(&self) -> Box<dyn AppDyn + 'static>;
+    fn clone_app(&self) -> Box<dyn AppDyn>;
 
     fn set_config<'a, 'b: 'a>(
         &'a self,
@@ -181,7 +183,7 @@ pub trait AppDyn {
     }
 }
 
-impl<T: App + 'static> AppDyn for T {
+impl<T: OBApp + 'static> AppDyn for T {
     fn response_supported(&self) -> bool {
         self.response_supported()
     }
@@ -209,7 +211,7 @@ impl<T: App + 'static> AppDyn for T {
         Box::pin(self.send_action_impl(action, self_))
     }
 
-    fn clone_app(&self) -> Box<dyn AppDyn + 'static> {
+    fn clone_app(&self) -> Box<dyn AppDyn> {
         Box::new(self.clone_app())
     }
 
@@ -237,6 +239,36 @@ pub trait AppExt {
         E: std::error::Error + Send + 'static,
         A: OBAction + TryInto<ActionType, Error = E> + Send + 'static;
 
+    fn send_action_only<E, A>(
+        &self,
+        action: A,
+        self_: Option<BotSelf>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_
+    where
+        E: std::error::Error + Send + 'static,
+        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
+        Self: Sync,
+    {
+        async move { self.send_action(action, self_).await.map(|_| ()) }
+    }
+
+    fn call_action<E, A>(
+        &self,
+        action: A,
+        self_: Option<BotSelf>,
+    ) -> impl Future<Output = Result<A::Resp, Error>> + Send + '_
+    where
+        E: std::error::Error + Send + 'static,
+        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
+        Self: Sync,
+    {
+        async move {
+            self.send_action(action, self_)
+                .await?
+                .ok_or_else(|| Error::missing("response"))
+        }
+    }
+
     fn get_latest_events<'a>(
         &'a self,
         limit: i64,
@@ -259,7 +291,7 @@ pub trait AppExt {
     }
 }
 
-impl<T: App + Sync> AppExt for T {
+impl<T: OBApp + Sync> AppExt for T {
     fn send_action<E, A>(
         &self,
         action: A,

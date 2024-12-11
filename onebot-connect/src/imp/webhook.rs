@@ -91,7 +91,7 @@ pub struct WebhookImpl {
     http: reqwest::Client,
 }
 
-impl Impl for WebhookImpl {
+impl OBImpl for WebhookImpl {
     async fn send_event_impl(&self, event: Event) -> Result<(), OCError> {
         let resp: Vec<Action> = self
             .http
@@ -137,7 +137,7 @@ impl WebhookImplProvider {
     }
 }
 
-impl ImplProvider for WebhookImplProvider {
+impl OBImplProvider for WebhookImplProvider {
     type Output = WebhookImpl;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {

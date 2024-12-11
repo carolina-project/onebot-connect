@@ -175,7 +175,7 @@ impl HttpImpl {
     }
 }
 
-impl Impl for HttpImpl {
+impl OBImpl for HttpImpl {
     fn send_event_impl(
         &self,
         event: Event,
@@ -207,7 +207,7 @@ impl HttpImplProvider {
     }
 }
 
-impl ImplProvider for HttpImplProvider {
+impl OBImplProvider for HttpImplProvider {
     type Output = HttpImpl;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {

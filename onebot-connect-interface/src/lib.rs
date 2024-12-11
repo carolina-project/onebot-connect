@@ -33,6 +33,8 @@ pub enum Error {
     NotSupported(String),
     #[error("closed: {0}")]
     Closed(String),
+    #[error("missing {0}")]
+    Missing(String),
     #[error("{0}")]
     Other(String),
 }
@@ -68,5 +70,9 @@ impl Error {
 
     pub fn closed<E: Display>(e: E) -> Self {
         Self::Closed(e.to_string())
+    }
+
+    pub fn missing<E: Display>(e: E) -> Self {
+        Self::Missing(e.to_string())
     }
 }

@@ -63,35 +63,25 @@ impl MessageSource for HttpMessageSource {
     }
 }
 
-struct HttpAppInner {
-    http: reqwest::Client,
+pub(crate) struct HttpInner {
     url: String,
 }
 
+pub(crate) type HttpInnerShared = Arc<HttpInner>;
+
 #[derive(Clone)]
 pub struct HttpApp {
-    inner: Arc<HttpAppInner>,
+    http: reqwest::Client,
+    inner: HttpInnerShared,
 }
 
-impl<T> From<T> for HttpApp
-where
-    T: Into<Arc<HttpAppInner>>,
-{
-    fn from(value: T) -> Self {
-        Self {
-            inner: value.into(),
-        }
-    }
-}
-
-impl App for HttpApp {
+impl OBApp for HttpApp {
     async fn send_action_impl(
         &self,
         action: onebot_types::ob12::action::ActionType,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<Value>, OCError> {
         let http_resp = self
-            .inner
             .http
             .post(&self.inner.url)
             .json(&Action {
@@ -125,25 +115,23 @@ impl App for HttpApp {
 }
 
 pub struct HttpAppProvider {
-    app_inner: Arc<HttpAppInner>,
+    app: HttpApp,
 }
 
 impl HttpAppProvider {
     pub fn new(http: reqwest::Client, url: impl Into<String>) -> Self {
-        Self {
-            app_inner: HttpAppInner {
-                http,
-                url: url.into(),
-            }
-            .into(),
-        }
+        let app = HttpApp {
+            http,
+            inner: HttpInner { url: url.into() }.into(),
+        };
+        Self { app }
     }
 }
-impl AppProvider for HttpAppProvider {
+impl OBAppProvider for HttpAppProvider {
     type Output = HttpApp;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        Ok(HttpApp::from(self.app_inner.clone()))
+        Ok(self.app.clone())
     }
 }
 
