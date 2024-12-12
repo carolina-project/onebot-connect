@@ -15,7 +15,7 @@ use parking_lot::RwLock;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use uuid::Uuid;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UrlUpload {
     pub url: String,
     pub headers: Option<HeaderMap>,
@@ -51,6 +51,10 @@ impl UploadError {
         Self::Other(e.to_string())
     }
 
+    pub fn not_exists(e: impl AsRef<Uuid>) -> Self {
+        Self::NotExists(e.as_ref().clone())
+    }
+
     pub fn unsupported<E: Display>(e: E) -> Self {
         Self::Unsupported(e.to_string())
     }
@@ -68,20 +72,13 @@ pub trait UploadStorage: Send + Sync {
         upload: UploadFileReq,
     ) -> impl Future<Output = Result<Option<Uuid>, UploadError>>;
 
-    fn get_url(
-        &self,
-        uuid: &Uuid,
-    ) -> impl Future<Output = Result<UrlUpload, UploadError>>;
+    fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<UrlUpload, UploadError>>;
 
-    fn get_path(
-        &self,
-        uuid: &Uuid,
-    ) -> impl Future<Output = Result<PathBuf, UploadError>>;
+    fn is_cached(&self, uuid: &Uuid) -> impl Future<Output = Result<bool, UploadError>>;
 
-    fn get_data(
-        &self,
-        uuid: &Uuid,
-    ) -> impl Future<Output = Result<bytes::Bytes, UploadError>>;
+    fn get_path(&self, uuid: &Uuid) -> impl Future<Output = Result<PathBuf, UploadError>>;
+
+    fn get_data(&self, uuid: &Uuid) -> impl Future<Output = Result<bytes::Bytes, UploadError>>;
 
     fn get_fragmented(
         &self,
