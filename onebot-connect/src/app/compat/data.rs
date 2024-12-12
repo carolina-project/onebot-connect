@@ -8,13 +8,13 @@ use serde_value::{DeserializerError, SerializerError};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{common::storage::{LocalFs, OBFileStorage, FS}, Error as AllErr};
+use crate::{common::{storage::{LocalFs, OBFileStorage, FS}, UploadError, UploadStorage}, Error as AllErr};
 
 use onebot_types::{
     compat::{
         action::{bot::OB11File, IntoOB11Action, IntoOB11ActionAsync},
         event::IntoOB12EventAsync,
-        message::{IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync},
+        message::{FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync},
     },
     ob11::{action as ob11a, event as ob11e, message as ob11m},
     ob12::{self, action as ob12a, event as ob12e, message as ob12m},
@@ -108,16 +108,8 @@ mod convert {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum CompatFile {
-    Record(ob11m::Record),
-    Image(ob11m::Image),
-    Video(ob12a::FileOpt),
-}
-
 #[derive(Default)]
 struct AppDataInner {
-    file_map: DashMap<Uuid, CompatFile>,
     bot_self: RwLock<Option<ob12::BotSelf>>,
     self_id: RwLock<String>,
     storage: OBFileStorage,
@@ -137,7 +129,7 @@ impl Deref for AppData {
 
 impl AppData {
     async fn trace_file(&self, file: OB11File) -> String {
-        let file_map = self.file_map;
+        let file_map = self.storage;
         let mut uuid;
         loop {
             uuid = Uuid::new_v4();
@@ -150,12 +142,14 @@ impl AppData {
         uuid.into()
     }
 
-    async fn find_file(&self, id: &str) -> Result<CompatFile, AllErr> {
-        let id = Uuid::from_str(id).map_err(AllErr::other)?;
-        if let Some(name) = self.file_map.get(&id) {
-            Ok(name.clone())
+    async fn find_file(&self, id: &str, opt: Option<ob11m::FileOption>) -> Result<FileSeg, AllErr> {
+        let uuid = Uuid::from_str(id).map_err(AllErr::other)?;
+        if self.storage.is_cached(&uuid).await? {
+            let file = self.storage.get_path(&uuid).await?.ok_or_else(move || UploadError::not_exists(uuid))?;
+            Ok(FileSeg { file: format!("file://{}", file.display()), opt })
         } else {
-            Err(AllErr::other(format!("cannot find id `{}`", id)))
+            let file = self.storage.get_url(&uuid).await?.ok_or_else(move || UploadError::not_exists(uuid))?;
+            Ok(FileSeg { file: file.url, opt })
         }
     }
 

@@ -1,5 +1,7 @@
 use std::{fmt::Display, io};
 
+use common::UploadError;
+
 #[cfg(feature = "app")]
 pub mod app;
 #[cfg(feature = "imp")]
@@ -26,6 +28,8 @@ pub enum Error {
     #[cfg(feature = "http")]
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
+    #[error(transparent)]
+    Upload(#[from] UploadError),
     #[error("{0}")]
     Other(String),
 }
