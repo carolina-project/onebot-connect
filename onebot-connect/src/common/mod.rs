@@ -72,18 +72,18 @@ pub trait UploadStorage: Send + Sync {
         upload: UploadFileReq,
     ) -> impl Future<Output = Result<Option<Uuid>, UploadError>>;
 
-    fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<UrlUpload, UploadError>>;
+    fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<UrlUpload>, UploadError>>;
 
     fn is_cached(&self, uuid: &Uuid) -> impl Future<Output = Result<bool, UploadError>>;
 
-    fn get_path(&self, uuid: &Uuid) -> impl Future<Output = Result<PathBuf, UploadError>>;
+    fn get_path(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<PathBuf>, UploadError>>;
 
-    fn get_data(&self, uuid: &Uuid) -> impl Future<Output = Result<bytes::Bytes, UploadError>>;
+    fn get_data(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<Vec<u8>>, UploadError>>;
 
     fn get_fragmented(
         &self,
         get: GetFileFragmented,
-    ) -> impl Future<Output = Result<GetFileFrag, UploadError>>;
+    ) -> impl Future<Output = Result<Option<GetFileFrag>, UploadError>>;
 }
 
 #[derive(Debug)]

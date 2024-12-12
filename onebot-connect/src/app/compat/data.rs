@@ -1,5 +1,6 @@
-use std::{fmt::Display, str::FromStr, sync::Arc};
+use std::{fmt::Display, ops::Deref, str::FromStr, sync::Arc};
 
+use dashmap::DashMap;
 use fxhash::FxHashMap;
 use parking_lot::RwLock;
 use serde::{de::Error as DeErr, ser::Error as SerErr};
@@ -7,7 +8,7 @@ use serde_value::{DeserializerError, SerializerError};
 use url::Url;
 use uuid::Uuid;
 
-use crate::Error as AllErr;
+use crate::{common::storage::{LocalFs, OBFileStorage, FS}, Error as AllErr};
 
 use onebot_types::{
     compat::{
@@ -114,22 +115,29 @@ pub enum CompatFile {
     Video(ob12a::FileOpt),
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 struct AppDataInner {
-    file_map: FxHashMap<Uuid, CompatFile>,
-    bot_self: Option<ob12::BotSelf>,
-    self_id: String,
+    file_map: DashMap<Uuid, CompatFile>,
+    bot_self: RwLock<Option<ob12::BotSelf>>,
+    self_id: RwLock<String>,
+    storage: OBFileStorage,
 }
 
 /// Connection status of OneBot 11 connection
 #[derive(Default, Clone)]
-struct AppData {
-    inner: Arc<RwLock<AppDataInner>>,
+struct AppData(Arc<AppDataInner>);
+
+impl Deref for AppData {
+    type Target = AppDataInner;
+    
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl AppData {
     async fn trace_file(&self, file: OB11File) -> String {
-        let file_map = &mut self.inner.write().file_map;
+        let file_map = self.file_map;
         let mut uuid;
         loop {
             uuid = Uuid::new_v4();
@@ -144,7 +152,7 @@ impl AppData {
 
     async fn find_file(&self, id: &str) -> Result<CompatFile, AllErr> {
         let id = Uuid::from_str(id).map_err(AllErr::other)?;
-        if let Some(name) = self.inner.read().file_map.get(&id) {
+        if let Some(name) = self.file_map.get(&id) {
             Ok(name.clone())
         } else {
             Err(AllErr::other(format!("cannot find id `{}`", id)))
