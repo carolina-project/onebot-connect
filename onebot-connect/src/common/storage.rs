@@ -404,4 +404,19 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
             FileSource::Path(_) => Ok(true),
         }
     }
+
+    async fn get_store_state(&self, uuid: &Uuid) -> Result<StoreState, UploadError> {
+        let file = self.get_file(uuid)?;
+
+        match &file.source {
+            FileSource::Url { url, path } => {
+                if let Some(path) = path {
+                    Ok(StoreState::Cached(path.to_string_lossy().into_owned()))
+                } else {
+                    Ok(StoreState::NotCached(url.clone()))
+                }
+            }
+            FileSource::Path(path) => Ok(StoreState::Cached(path.to_string_lossy().into_owned())),
+        }
+    }
 }

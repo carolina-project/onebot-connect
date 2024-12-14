@@ -60,6 +60,12 @@ impl UploadError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum StoreState {
+    NotCached(UrlUpload),
+    Cached(String),
+}
+
 pub trait UploadStorage: Send + Sync {
     fn upload(
         &self,
@@ -73,6 +79,8 @@ pub trait UploadStorage: Send + Sync {
     ) -> impl Future<Output = Result<Option<Uuid>, UploadError>>;
 
     fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<UrlUpload>, UploadError>>;
+
+    fn get_store_state(&self, uuid: &Uuid) -> impl Future<Output = Result<StoreState, UploadError>>;
 
     fn is_cached(&self, uuid: &Uuid) -> impl Future<Output = Result<bool, UploadError>>;
 

@@ -8,7 +8,14 @@ use serde_value::{DeserializerError, SerializerError};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{common::{storage::{LocalFs, OBFileStorage, FS}, UploadError, UploadStorage}, Error as AllErr};
+use crate::{
+    common::{
+        self,
+        storage::{self, LocalFs, OBFileStorage, FS},
+        UploadError, UploadKind, UploadStorage, UrlUpload,
+    },
+    Error as AllErr,
+};
 
 use onebot_types::{
     compat::{
@@ -16,7 +23,7 @@ use onebot_types::{
         event::IntoOB12EventAsync,
         message::{FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync},
     },
-    ob11::{action as ob11a, event as ob11e, message as ob11m},
+    ob11::{action as ob11a, event as ob11e, message as ob11m, MessageSeg},
     ob12::{self, action as ob12a, event as ob12e, message as ob12m},
 };
 
@@ -121,35 +128,29 @@ struct AppData(Arc<AppDataInner>);
 
 impl Deref for AppData {
     type Target = AppDataInner;
-    
+
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
 impl AppData {
-    async fn trace_file(&self, file: OB11File) -> String {
-        let file_map = self.storage;
-        let mut uuid;
-        loop {
-            uuid = Uuid::new_v4();
-            if !file_map.contains_key(&uuid) {
-                break;
+    async fn trace_file(&self, file: FileSeg) -> Result<Uuid, UploadError> {
+        match file.url {
+            Some(url) => {
+                self.storage
+                    .upload(file.file, UploadKind::Url(UrlUpload { url, headers: None }))
+                    .await
             }
+            None => Err(UploadError::unsupported("send file")),
         }
-
-        file_map.insert(uuid, file);
-        uuid.into()
     }
 
-    async fn find_file(&self, id: &str, opt: Option<ob11m::FileOption>) -> Result<FileSeg, AllErr> {
-        let uuid = Uuid::from_str(id).map_err(AllErr::other)?;
-        if self.storage.is_cached(&uuid).await? {
-            let file = self.storage.get_path(&uuid).await?.ok_or_else(move || UploadError::not_exists(uuid))?;
-            Ok(FileSeg { file: format!("file://{}", file.display()), opt })
-        } else {
-            let file = self.storage.get_url(&uuid).await?.ok_or_else(move || UploadError::not_exists(uuid))?;
-            Ok(FileSeg { file: file.url, opt })
+    async fn find_file(&self, id: &str) -> Result<String, UploadError> {
+        let uuid = Uuid::from_str(id)?;
+        match self.storage.get_store_state(&uuid).await? {
+            common::StoreState::NotCached(url) => Ok(url.url),
+            common::StoreState::Cached(path) => Ok(path),
         }
     }
 
@@ -159,7 +160,7 @@ impl AppData {
         app: &A,
     ) -> Result<MessageSeg, DeserializerError> {
         use convert::{ob12_to_11_seg, ob12_to_11_seg_async};
-        let find = |name: String| async move { self.find_file(&name).await };
+        let find = |name: String| async move { self.find_file(&name).await.map_err(DeErr::custom) };
         match msg {
             ob12m::MessageSeg::Text(text) => ob12_to_11_seg(text),
             ob12m::MessageSeg::Mention(mention) => ob12_to_11_seg(mention),
@@ -169,7 +170,7 @@ impl AppData {
             ob12m::MessageSeg::Image(image) => ob12_to_11_seg_async(image, find).await,
             ob12m::MessageSeg::Voice(voice) => ob12_to_11_seg_async(voice, find).await,
             ob12m::MessageSeg::Audio(audio) => ob12_to_11_seg_async(audio, find).await,
-            ob12m::MessageSeg::Video(video) => ob12_to_11_seg(video),
+            ob12m::MessageSeg::Video(video) => ob12_to_11_seg_async(video, find).await,
             ob12m::MessageSeg::File(_) => {
                 ob12_to_11_seg(ob12m::MessageSeg::File(Default::default()))
             }
