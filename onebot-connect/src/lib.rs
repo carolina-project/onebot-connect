@@ -1,6 +1,8 @@
 use std::{fmt::Display, io};
 
 use common::UploadError;
+use onebot_connect_interface::Error as OCError;
+use serde_value::{DeserializerError, SerializerError};
 
 #[cfg(feature = "app")]
 pub mod app;
@@ -12,7 +14,7 @@ pub mod common;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    OneBotConnect(#[from] onebot_connect_interface::Error),
+    OneBotConnect(#[from] OCError),
     #[cfg(any(feature = "ws", feature = "http"))]
     #[error(transparent)]
     HeaderValue(#[from] http::header::InvalidHeaderValue),
@@ -46,6 +48,18 @@ pub enum RecvError {
     SerdeJson(#[from] serde_json::Error),
     #[error("invalid data type: {0}")]
     InvalidData(String),
+}
+
+impl From<DeserializerError> for Error {
+    fn from(e: DeserializerError) -> Self {
+        Self::OneBotConnect(OCError::deserialize(e))
+    }
+}
+
+impl From<SerializerError> for Error {
+    fn from(e: SerializerError) -> Self {
+        Self::OneBotConnect(OCError::serialize(e))
+    }
 }
 
 impl RecvError {

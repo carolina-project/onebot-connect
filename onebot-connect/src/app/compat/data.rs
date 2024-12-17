@@ -3,8 +3,8 @@ use std::{fmt::Display, ops::Deref, str::FromStr, sync::Arc};
 use dashmap::DashMap;
 use fxhash::FxHashMap;
 use parking_lot::RwLock;
-use serde::{de::Error as DeErr, ser::Error as SerErr};
-use serde_value::{DeserializerError, SerializerError};
+use serde::{de::Error as DeErr, ser::Error as SerErr, Deserialize};
+use serde_value::{DeserializerError, SerializerError, Value};
 use url::Url;
 use uuid::Uuid;
 
@@ -18,16 +18,28 @@ use crate::{
 };
 
 use onebot_types::{
+    base::RawMessageSeg,
     compat::{
-        action::{bot::OB11File, IntoOB11Action, IntoOB11ActionAsync},
+        action::{bot::OB11File, CompatAction, IntoOB11Action, IntoOB11ActionAsync},
+        compat_self,
         event::IntoOB12EventAsync,
-        message::{FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync},
+        message::{
+            CompatSegment, FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync,
+        },
     },
-    ob11::{action as ob11a, event as ob11e, message as ob11m, MessageSeg},
+    ob11::{
+        action::{self as ob11a, ActionType, RawAction},
+        event::{self as ob11e, EventKind, MessageEvent},
+        message as ob11m, MessageSeg, RawEvent,
+    },
     ob12::{self, action as ob12a, event as ob12e, message as ob12m},
+    ValueMap,
 };
 
-use onebot_connect_interface::{app::OBApp, Error as OCErr};
+use onebot_connect_interface::{
+    app::{OBApp, RespArgs},
+    Error as OCErr,
+};
 
 mod convert {
     use super::*;
@@ -115,10 +127,15 @@ mod convert {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum ActionConverted {
+    Send(RawAction),
+    Respond(RespArgs),
+}
+
 #[derive(Default)]
 struct AppDataInner {
     bot_self: RwLock<Option<ob12::BotSelf>>,
-    self_id: RwLock<String>,
     storage: OBFileStorage,
 }
 
@@ -154,140 +171,209 @@ impl AppData {
         }
     }
 
-    async fn ob12_to_ob11_seg<A: OBApp>(
-        &self,
-        msg: ob12::MessageSeg,
-        app: &A,
-    ) -> Result<MessageSeg, DeserializerError> {
+    async fn ob12_to_ob11_seg<A: OBApp>(&self, msg: RawMessageSeg) -> Result<RawMessageSeg, OCErr> {
         use convert::{ob12_to_11_seg, ob12_to_11_seg_async};
+        let msg: ob12m::MessageSeg = msg.try_into()?;
         let find = |name: String| async move { self.find_file(&name).await.map_err(DeErr::custom) };
-        match msg {
-            ob12m::MessageSeg::Text(text) => ob12_to_11_seg(text),
-            ob12m::MessageSeg::Mention(mention) => ob12_to_11_seg(mention),
-            ob12m::MessageSeg::MentionAll(mention_all) => ob12_to_11_seg(mention_all),
-            ob12m::MessageSeg::Location(location) => ob12_to_11_seg(location),
-            ob12m::MessageSeg::Reply(reply) => ob12_to_11_seg(reply),
-            ob12m::MessageSeg::Image(image) => ob12_to_11_seg_async(image, find).await,
-            ob12m::MessageSeg::Voice(voice) => ob12_to_11_seg_async(voice, find).await,
-            ob12m::MessageSeg::Audio(audio) => ob12_to_11_seg_async(audio, find).await,
-            ob12m::MessageSeg::Video(video) => ob12_to_11_seg_async(video, find).await,
-            ob12m::MessageSeg::File(_) => {
-                ob12_to_11_seg(ob12m::MessageSeg::File(Default::default()))
+
+        let ob12seg = match msg {
+            ob12m::MessageSeg::Text(text) => ob12_to_11_seg(text)?,
+            ob12m::MessageSeg::Mention(mention) => ob12_to_11_seg(mention)?,
+            ob12m::MessageSeg::MentionAll(mention_all) => ob12_to_11_seg(mention_all)?,
+            ob12m::MessageSeg::Location(location) => ob12_to_11_seg(location)?,
+            ob12m::MessageSeg::Reply(reply) => ob12_to_11_seg(reply)?,
+            ob12m::MessageSeg::Image(image) => ob12_to_11_seg_async(image, find).await?,
+            ob12m::MessageSeg::Voice(voice) => ob12_to_11_seg_async(voice, find).await?,
+            ob12m::MessageSeg::Audio(audio) => ob12_to_11_seg_async(audio, find).await?,
+            ob12m::MessageSeg::Video(video) => ob12_to_11_seg_async(video, find).await?,
+            ob12m::MessageSeg::File(_) => Err(OCErr::not_supported(
+                "`file` message seg conversion not supported",
+            ))?,
+            ob12m::MessageSeg::Other(RawMessageSeg { r#type, data }) => {
+                CompatSegment::parse_data(r#type, data)
+                    .map_err(OCErr::other)?
+                    .into()
             }
-            ob12m::MessageSeg::Other { r#type, data } => {
-                ob12_to_11_seg(ob12m::MessageSeg::Other { r#type, data })
-            }
-        }
+        };
+
+        ob12seg.try_into().map_err(OCErr::serialize)
     }
 
     async fn ob11_to_ob12_seg<A: OBApp>(
         &self,
-        msg: MessageSeg,
+        msg: RawMessageSeg,
         app: &A,
-    ) -> Result<ob12m::MessageSeg, SerializerError> {
-        match msg {
-            MessageSeg::Text(text) => ob11_to_12_seg_default(text),
-            MessageSeg::Face(face) => ob11_to_12_seg_default(face),
-            MessageSeg::Image(image) => {
-                ob11_to_12_seg_async(image, |name| async move {
-                    Ok(self.trace_file(FileType::Image(name)).await)
-                })
+    ) -> Result<RawMessageSeg, OCErr> {
+        use convert::*;
+        let msg: ob11m::MessageSeg = msg.try_into()?;
+        let trace_fn = |file: FileSeg| async move {
+            self.trace_file(file)
                 .await
-            }
-            MessageSeg::Record(record) => ob11_to_12_seg_async(record, trace_fn).await,
-            MessageSeg::Video(video) => ob11_to_12_seg_async(video, trace_fn).await,
-            MessageSeg::At(at) => ob11_to_12_seg_default(at),
-            MessageSeg::Rps(rps) => ob11_to_12_seg_default(rps),
-            MessageSeg::Dice(dice) => ob11_to_12_seg_default(dice),
-            MessageSeg::Shake(shake) => ob11_to_12_seg_default(shake),
-            MessageSeg::Poke(poke) => ob11_to_12_seg_default(poke),
-            MessageSeg::Anonymous(anonymous) => ob11_to_12_seg_default(anonymous),
-            MessageSeg::Share(share) => ob11_to_12_seg_default(share),
-            MessageSeg::Contact(contact) => ob11_to_12_seg_default(contact),
-            MessageSeg::Location(location) => ob11_to_12_seg_default(location),
-            MessageSeg::Music(music) => ob11_to_12_seg_default(music),
-            MessageSeg::Reply(reply) => ob11_to_12_seg(reply.clone(), {
+                .map(|r| r.to_string())
+                .map_err(SerializerError::custom)
+        };
+
+        let ob11msg = match msg {
+            MessageSeg::Text(text) => ob11_to_12_seg_default(text)?,
+            MessageSeg::Face(face) => ob11_to_12_seg_default(face)?,
+            MessageSeg::Image(image) => ob11_to_12_seg_async(image, trace_fn).await?,
+            MessageSeg::Record(record) => ob11_to_12_seg_async(record, trace_fn).await?,
+            MessageSeg::Video(video) => ob11_to_12_seg_async(video, trace_fn).await?,
+            MessageSeg::At(at) => ob11_to_12_seg_default(at)?,
+            MessageSeg::Rps(rps) => ob11_to_12_seg_default(rps)?,
+            MessageSeg::Dice(dice) => ob11_to_12_seg_default(dice)?,
+            MessageSeg::Shake(shake) => ob11_to_12_seg_default(shake)?,
+            MessageSeg::Poke(poke) => ob11_to_12_seg_default(poke)?,
+            MessageSeg::Anonymous(anonymous) => ob11_to_12_seg_default(anonymous)?,
+            MessageSeg::Share(share) => ob11_to_12_seg_default(share)?,
+            MessageSeg::Contact(contact) => ob11_to_12_seg_default(contact)?,
+            MessageSeg::Location(location) => ob11_to_12_seg_default(location)?,
+            MessageSeg::Music(music) => ob11_to_12_seg_default(music)?,
+            MessageSeg::Reply(reply) => {
                 use onebot_connect_interface::app::AppExt;
-                let r = app
+
+                let resp = app
                     .call_action(
-                        GetMsg {
+                        ob11a::GetMsg {
                             message_id: reply.id,
                         },
-                        None,
+                        self.bot_self.read().clone(),
                     )
-                    .await
-                    .map_err(SerializerError::custom)?;
-                r.sender.user_id().map(|id| id.to_string())
-            }),
-            MessageSeg::Forward(forward) => ob11_to_12_seg_default(forward),
-            MessageSeg::Node(forward_node) => ob11_to_12_seg_default(forward_node),
-            MessageSeg::Xml(xml) => ob11_to_12_seg_default(xml),
-            MessageSeg::Json(json) => ob11_to_12_seg_default(json),
-            seg => Err(SerializerError::custom(format!(
-                "unknown ob11 message seg: {:?}",
-                seg
-            ))),
-        }
+                    .await?;
+
+                reply
+                    .into_ob12(resp.sender.user_id().map(|r| r.to_string()))?
+                    .into()
+            }
+            MessageSeg::Forward(forward) => ob11_to_12_seg_default(forward)?,
+            MessageSeg::Node(forward_node) => ob11_to_12_seg_default(forward_node)?,
+            MessageSeg::Xml(xml) => ob11_to_12_seg_default(xml)?,
+            MessageSeg::Json(json) => ob11_to_12_seg_default(json)?,
+        };
+
+        ob11msg.try_into().map_err(OCErr::serialize)
     }
 
     async fn convert_msg_event<A: OBApp>(
         &self,
         msg: MessageEvent,
         app: &A,
-    ) -> Result<ob12e::EventType, AllErr> {
-        let msg_convert = |msg| async { self.ob11_to_ob12_seg(msg, app).await };
+    ) -> Result<ob12e::MessageEvent, OCErr> {
+        let msg_convert = |msg| async {
+            self.ob11_to_ob12_seg(msg, app)
+                .await
+                .map_err(SerErr::custom)
+        };
         Ok(msg
-            .into_ob12((self.inner.read().self_id.clone(), msg_convert))
+            .into_ob12((
+                self.bot_self
+                    .read()
+                    .as_ref()
+                    .map(|r| r.user_id.clone())
+                    .ok_or_else(|| OCErr::missing("bot_self not set"))?,
+                msg_convert,
+            ))
             .await
             .map_err(OCErr::serialize)?)
     }
 
+    async fn convert_event<A: OBApp>(
+        &self,
+        event: RawEvent,
+        app: &A,
+    ) -> Result<ob12e::RawEvent, OCErr> {
+        let event_k: EventKind = event.detail.try_into()?;
+
+        let detail = match event_k {
+            EventKind::Message(msg) => self.convert_msg_event(msg.try_into()?, app).await?,
+            EventKind::Meta(_) => todo!(),
+            EventKind::Request(_) => todo!(),
+            EventKind::Notice(_) => todo!(),
+        };
+        Ok(ob12e::RawEvent {
+            id: Uuid::new_v4().to_string(),
+            time: event.time,
+            event: detail.try_into()?,
+        })
+    }
+
     async fn convert_action<A: OBApp>(
         &self,
-        action: ob12a::ActionType,
+        action: ob12a::RawAction,
         app: &A,
-    ) -> Result<ActionType, DeserializerError> {
-        match action {
+    ) -> Result<ActionConverted, AllErr> {
+        use convert::*;
+
+        let detail: ob12a::ActionType = action.action.try_into().map_err(OCErr::deserialize)?;
+        let detail = match detail {
             ob12a::ActionType::GetLatestEvents(_) => {
-                Err(DeErr::custom("please poll events with HTTP POST"))
+                // please get events using ob11 http post
+                return Err(OCErr::not_supported("please poll events with HTTP POST").into());
             }
             ob12a::ActionType::GetSupportedActions(_) => {
-                Err(DeErr::custom("ob11 side do not support"))
+                return Err(OCErr::not_supported("ob11 side do not support").into())
             }
-            ob12a::ActionType::GetStatus(action) => convert_action_default(action),
-            ob12a::ActionType::GetVersion(action) => convert_action_default(action),
-            ob12a::ActionType::GetSelfInfo(action) => convert_action_default(action),
-            ob12a::ActionType::GetUserInfo(action) => convert_action_default(action),
-            ob12a::ActionType::GetFriendList(action) => convert_action_default(action),
+            ob12a::ActionType::GetStatus(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetVersion(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetSelfInfo(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetUserInfo(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetFriendList(action) => convert_action_default(action)?,
             ob12a::ActionType::SendMessage(action) => {
                 convert_action_async(action, |msg| async move {
                     self.ob11_to_ob12_seg(msg, app).await
                 })
-                .await
+                .await?
             }
-            ob12a::ActionType::DeleteMessage(action) => Some(action.into_ob11(()).unwrap().into()),
-            ob12a::ActionType::GetGroupInfo(action) => Some(action.into_ob11(()).unwrap().into()),
-            ob12a::ActionType::GetGroupList(action) => Some(action.into_ob11(()).unwrap().into()),
-            ob12a::ActionType::GetGroupMemberInfo(action) => {
-                Some(action.into_ob11(()).unwrap().into())
+            ob12a::ActionType::DeleteMessage(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetGroupInfo(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetGroupList(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetGroupMemberInfo(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetGroupMemberList(action) => convert_action_default(action)?,
+            ob12a::ActionType::SetGroupName(action) => convert_action_default(action)?,
+            ob12a::ActionType::LeaveGroup(action) => convert_action_default(action)?,
+            ob12a::ActionType::GetFile(action) => {
+                use ob12a::*;
+
+                #[inline]
+                fn mk_response<R: serde::Serialize>(resp: R) -> Result<ActionConverted, AllErr> {
+                    Ok(ActionConverted::Respond(RespArgs::success(
+                        ValueMap::deserialize(serde_value::to_value(resp)?)?,
+                    )))
+                }
+                #[inline]
+                fn mk_missing_file() -> Result<ActionConverted, AllErr> {
+                    Ok(ActionConverted::Respond(RespArgs::failed(
+                        RetCode::FilesystemError(33404),
+                        "cannot find specified file",
+                    )))
+                }
+
+                let uuid = Uuid::from_str(&action.file_id).map_err(UploadError::Uuid)?;
+                match action.r#type {
+                    GetFileType::Url => match self.storage.get_url(&uuid).await? {
+                        Some(url) => {
+                            ob12a::GetFileResp {
+                                file: FileOpt { kind: , name: (), sha256: () },
+                                extra: todo!(),
+                            }
+                        }
+                        None => return mk_missing_file(),
+                    },
+                    GetFileType::Path => todo!(),
+                    GetFileType::Data => todo!(),
+                    GetFileType::Other(_) => todo!(),
+                }
             }
-            ob12a::ActionType::GetGroupMemberList(action) => {
-                Some(action.into_ob11(()).unwrap().into())
+            ob12a::ActionType::Other(ob12a::ActionDetail { action, params }) => {
+                CompatAction::from_data(action, params)
+                    .map_err(OCErr::other)?
+                    .into()
             }
-            ob12a::ActionType::SetGroupName(action) => Some(action.into_ob11(()).unwrap().into()),
-            ob12a::ActionType::LeaveGroup(action) => Some(action.into_ob11(()).unwrap().into()),
-            ob12a::ActionType::GetFile(action) => Some(
-                action
-                    .into_ob11(|_| async { FileType::Record("sadwa".into()) })
-                    .await
-                    .unwrap()
-                    .into(),
-            ),
-            ob12a::ActionType::Other(action) => {
-                CompatAction::from_data(&action.action, action.params).unwrap();
-                None
-            }
-            _ => None,
-        }
+        };
+
+        Ok(ActionConverted::Send(RawAction {
+            detail: detail.try_into()?,
+            echo: action.echo,
+        }))
     }
 }

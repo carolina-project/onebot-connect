@@ -2,7 +2,6 @@ use ::http::HeaderValue;
 use hyper::header::AUTHORIZATION;
 use onebot_connect_interface::{ClosedReason, ConfigError};
 use onebot_types::ob12::action::{RespData, RespStatus, RetCode};
-use serde_value::Value;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{self, client::IntoClientRequest},
@@ -42,7 +41,7 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMess
                         RespStatus::Failed,
                         retcode,
                         message,
-                        Value::Map(Default::default()),
+                        Default::default(),
                     ),
                 };
                 let echo = match echo {

@@ -8,7 +8,6 @@ use onebot_types::ob12::{
 };
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
-use serde_value::Value;
 use tokio::sync::oneshot;
 
 use crate::common::{http_s::*, *};
@@ -56,7 +55,7 @@ impl CmdHandler<Command, RecvMessage> for HttpHandler {
                         ActionResponse::Error { retcode, message } => ob12::action::RespData {
                             status: RespStatus::Failed,
                             retcode,
-                            data: Value::Map(Default::default()),
+                            data: Default::default(),
                             message,
                             echo,
                         },

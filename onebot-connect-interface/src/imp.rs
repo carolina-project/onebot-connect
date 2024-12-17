@@ -1,10 +1,10 @@
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use onebot_types::ob12::{
+use onebot_types::{ob12::{
     action::{ActionDetail, RetCode},
     event::RawEvent,
     BotSelf,
-};
+}, ValueMap};
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 use tokio::sync::oneshot;
@@ -35,7 +35,7 @@ pub struct Action {
     pub self_: Option<BotSelf>,
 }
 pub enum ActionResponse {
-    Ok(Value),
+    Ok(ValueMap),
     Error { retcode: RetCode, message: String },
 }
 /// Messages received from connection

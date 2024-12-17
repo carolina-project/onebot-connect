@@ -6,7 +6,9 @@ pub mod ws;
 #[cfg(feature = "storage")]
 pub mod storage;
 
-use std::{fmt::Display, future::Future, path::PathBuf, sync::Arc};
+use std::{
+    fmt::{Debug, Display}, future::Future, ops::{Deref, DerefMut}, path::PathBuf, sync::Arc
+};
 
 use http::HeaderMap;
 use onebot_connect_interface::ClosedReason;
@@ -14,6 +16,25 @@ use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, UploadFileReq};
 use parking_lot::RwLock;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct FileInfo<T: Debug + Clone> {
+    pub name: String,
+    pub inner: T,
+}
+
+impl<T: Debug + Clone> Deref for FileInfo<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<T: Debug + Clone> DerefMut for FileInfo<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct UrlUpload {
@@ -80,7 +101,8 @@ pub trait UploadStorage: Send + Sync {
 
     fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<UrlUpload>, UploadError>>;
 
-    fn get_store_state(&self, uuid: &Uuid) -> impl Future<Output = Result<StoreState, UploadError>>;
+    fn get_store_state(&self, uuid: &Uuid)
+        -> impl Future<Output = Result<StoreState, UploadError>>;
 
     fn is_cached(&self, uuid: &Uuid) -> impl Future<Output = Result<bool, UploadError>>;
 

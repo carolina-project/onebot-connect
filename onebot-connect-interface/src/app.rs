@@ -17,14 +17,17 @@ use onebot_types::{
 mod recv {
     use std::fmt::Debug;
 
-    use onebot_types::ob12::{action::ActionDetail, event::RawEvent};
+    use onebot_types::ob12::{
+        action::{ActionDetail, RespStatus, RetCode},
+        event::RawEvent,
+    };
     use tokio::sync::oneshot;
 
     use crate::ClosedReason;
 
     use super::*;
 
-    pub type ActionResponder = oneshot::Sender<Result<Value, Error>>;
+    pub type ActionResponder = oneshot::Sender<Result<ValueMap, Error>>;
 
     /// Messages received from connection
     #[derive(Debug, Serialize, Deserialize)]
@@ -41,6 +44,34 @@ mod recv {
     pub struct ActionArgs {
         pub action: ActionDetail,
         pub self_: Option<BotSelf>,
+    }
+
+    /// Response args passed to connection.
+    pub struct RespArgs {
+        pub status: RespStatus,
+        pub retcode: RetCode,
+        pub data: ValueMap,
+        pub message: String,
+    }
+
+    impl RespArgs {
+        pub fn failed(retcode: RetCode, msg: impl Into<String>) -> Self {
+            Self {
+                status: RespStatus::Failed,
+                retcode,
+                data: Default::default(),
+                message: msg.into(),
+            }
+        }
+
+        pub fn success(data: ValueMap) -> Self {
+            Self {
+                status: RespStatus::Ok,
+                retcode: RetCode::Success,
+                data,
+                message: Default::default(),
+            }
+        }
     }
 
     /// Command enum to represent different commands that can be sent to connection
@@ -105,7 +136,7 @@ mod recv {
 
 #[cfg(feature = "app_recv")]
 pub use recv::*;
-use serde::{Deserialize, Serialize};
+use serde::{de::IntoDeserializer, Deserialize, Serialize};
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
@@ -122,7 +153,7 @@ pub trait OBApp: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<ValueMap>, Error>> + Send + '_;
 
     /// Get config from connection.
     #[allow(unused)]
@@ -164,7 +195,7 @@ pub trait AppDyn: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ValueMap>, Error>> + Send + '_>>;
 
     fn get_config<'a, 'b: 'a>(
         &'a self,
@@ -208,7 +239,7 @@ impl<T: OBApp + 'static> AppDyn for T {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ValueMap>, Error>> + Send + '_>> {
         Box::pin(self.send_action_impl(action, self_))
     }
 
@@ -313,7 +344,9 @@ impl<T: OBApp + Sync> AppExt for T {
                 )
                 .await?;
             Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
+                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(
+                    resp.into_deserializer(),
+                )?),
                 None => None,
             })
         }
@@ -340,7 +373,9 @@ impl AppExt for dyn AppDyn + Sync {
                 )
                 .await?;
             Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
+                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(
+                    resp.into_deserializer(),
+                )?),
                 None => None,
             })
         }

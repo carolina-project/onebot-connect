@@ -158,7 +158,7 @@ impl OBApp for WebhookApp {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, OCError> {
+    ) -> Result<Option<ValueMap>, OCError> {
         self.inner.actions.lock().push(ActionArgs { action, self_ });
         Ok(None)
     }

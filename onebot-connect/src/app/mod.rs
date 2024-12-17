@@ -3,7 +3,7 @@ use onebot_connect_interface::{
     app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
     ActionResult, Error as OCError,
 };
-use onebot_types::ob12::action::ActionDetail;
+use onebot_types::{ob12::action::ActionDetail, ValueMap};
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
 
@@ -30,7 +30,7 @@ pub use {ws::WSConnect, ws_re::WSReConnect};
 pub(crate) static ACTION_ECHO_CHARSET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-pub(crate) type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
+pub(crate) type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<ValueMap>>>;
 
 pub fn generate_echo(len: usize, map: &ActionMap) -> String {
     let mut rng = rand::thread_rng();
@@ -96,7 +96,7 @@ impl OBApp for TxAppSide {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, OCError> {
+    ) -> Result<Option<ValueMap>, OCError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::Action(ActionArgs { action, self_ }, tx))
