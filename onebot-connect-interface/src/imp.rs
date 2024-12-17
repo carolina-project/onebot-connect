@@ -1,8 +1,8 @@
 use std::{fmt::Debug, future::Future, pin::Pin};
 
 use onebot_types::ob12::{
-    action::{ActionType, RetCode},
-    event::Event,
+    action::{ActionDetail, RetCode},
+    event::RawEvent,
     BotSelf,
 };
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub enum ActionEcho {
 /// **Inner** Action representation
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Action {
-    pub action: ActionType,
+    pub action: ActionDetail,
     pub echo: ActionEcho,
     pub self_: Option<BotSelf>,
 }
@@ -50,7 +50,7 @@ pub enum RecvMessage {
 
 /// Command enum to represent different commands that can be sent to connection
 pub enum Command {
-    Event(Event),
+    Event(RawEvent),
     /// Respond to the action by echo
     Respond(ActionEcho, ActionResponse),
     /// Get connection config
@@ -67,7 +67,10 @@ pub trait MessageSource {
 }
 
 pub trait OBImpl {
-    fn send_event_impl(&self, event: Event) -> impl Future<Output = Result<(), Error>> + Send + '_;
+    fn send_event_impl(
+        &self,
+        event: RawEvent,
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     fn respond(
         &self,
@@ -96,7 +99,7 @@ impl<T: MessageSource> MessageSourceDyn for T {
 pub trait OBImplDyn {
     fn send_event_impl(
         &self,
-        event: Event,
+        event: RawEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 
     fn respond_action(
@@ -109,7 +112,7 @@ pub trait OBImplDyn {
 impl<T: OBImpl + Send + 'static> OBImplDyn for T {
     fn send_event_impl(
         &self,
-        event: Event,
+        event: RawEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
         Box::pin(self.send_event_impl(event))
     }

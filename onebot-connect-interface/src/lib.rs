@@ -2,10 +2,10 @@ use std::fmt::{Debug, Display};
 
 use onebot_types::ob12::action::RespError;
 use serde::{Deserialize, Serialize};
+use serde_value::{DeserializerError, SerializerError};
 
 #[cfg(feature = "imp")]
 pub mod imp;
-
 #[cfg(feature = "app")]
 pub mod app;
 
@@ -74,5 +74,17 @@ impl Error {
 
     pub fn missing<E: Display>(e: E) -> Self {
         Self::Missing(e.to_string())
+    }
+}
+
+impl From<SerializerError> for Error {
+    fn from(value: SerializerError) -> Self {
+        Self::serialize(value)
+    }
+}
+
+impl From<DeserializerError> for Error {
+    fn from(value: DeserializerError) -> Self {
+        Self::deserialize(value)
     }
 }

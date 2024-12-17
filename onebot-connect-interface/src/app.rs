@@ -6,17 +6,18 @@ use super::Error;
 use onebot_types::{
     base::OBAction,
     ob12::{
-        action::{ActionType, GetLatestEvents},
-        event::Event,
+        action::{ActionDetail, GetLatestEvents},
+        event::RawEvent,
         BotSelf,
     },
+    ValueMap,
 };
 
 #[cfg(feature = "app_recv")]
 mod recv {
     use std::fmt::Debug;
 
-    use onebot_types::ob12::event::Event;
+    use onebot_types::ob12::{action::ActionDetail, event::RawEvent};
     use tokio::sync::oneshot;
 
     use crate::ClosedReason;
@@ -28,7 +29,7 @@ mod recv {
     /// Messages received from connection
     #[derive(Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
-        Event(Event),
+        Event(RawEvent),
         /// Response after close command
         /// Ok means closed successfully, Err means close failed
         /// DO NOT send this at command handler, just set active state
@@ -38,7 +39,7 @@ mod recv {
     /// Action args passed to connection with command channel
     /// Response will be sent using `resp_tx`
     pub struct ActionArgs {
-        pub action: ActionType,
+        pub action: ActionDetail,
         pub self_: Option<BotSelf>,
     }
 
@@ -119,7 +120,7 @@ pub trait OBApp: Send + Sync {
     /// If action reponse is supported, return Ok(Some), Ok(None) otherwise.
     fn send_action_impl(
         &self,
-        action: ActionType,
+        action: ActionDetail,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
 
@@ -161,7 +162,7 @@ pub trait AppDyn: Send + Sync {
 
     fn send_action_dyn(
         &self,
-        action: ActionType,
+        action: ActionDetail,
         self_: Option<BotSelf>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
 
@@ -205,7 +206,7 @@ impl<T: OBApp + 'static> AppDyn for T {
 
     fn send_action_dyn(
         &self,
-        action: ActionType,
+        action: ActionDetail,
         self_: Option<BotSelf>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
         Box::pin(self.send_action_impl(action, self_))
@@ -230,40 +231,41 @@ fn process_resp<R>(resp: Option<R>) -> Result<R, Error> {
 
 /// Extension trait for `App` to provide additional functionalities
 pub trait AppExt {
-    fn send_action<E, A>(
+    /// Send an action, return `Ok(Some(A::Resp))` if `App` is responsive, `Err()` if error
+    /// occurred while processing action.
+    fn send_action<A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
     where
-        E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static;
+        A: OBAction + Send + 'static;
 
-    fn send_action_only<E, A>(
+    /// Only send action, ignore its response excluding error.
+    fn send_action_only<A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
-        E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
+        A: OBAction + Send + 'static,
         Self: Sync,
     {
         async move { self.send_action(action, self_).await.map(|_| ()) }
     }
 
-    fn call_action<E, A>(
+    /// Send an action, treating unresponsive as an error.
+    fn call_action<A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<A::Resp, Error>> + Send + '_
     where
-        E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
+        A: OBAction + Send + 'static,
         Self: Sync,
     {
         async move {
-            self.send_action(action, self_)
+            self.send_action::<A>(action, self_)
                 .await?
                 .ok_or_else(|| Error::missing("response"))
         }
@@ -274,7 +276,7 @@ pub trait AppExt {
         limit: i64,
         timeout: i64,
         self_: Option<BotSelf>,
-    ) -> impl std::future::Future<Output = Result<Vec<Event>, Error>> + Send + 'a
+    ) -> impl std::future::Future<Output = Result<Vec<RawEvent>, Error>> + Send + 'a
     where
         Self: Sync,
     {
@@ -292,23 +294,26 @@ pub trait AppExt {
 }
 
 impl<T: OBApp + Sync> AppExt for T {
-    fn send_action<E, A>(
+    fn send_action<A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
     where
-        E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E> + Send + 'static,
+        A: OBAction + Send + 'static,
     {
         async move {
             let resp = self
-                .send_action_impl(action.try_into().map_err(Error::other)?, self_)
+                .send_action_impl(
+                    ActionDetail {
+                        action: action.action_name().into(),
+                        params: ValueMap::deserialize(serde_value::to_value(action)?)?,
+                    },
+                    self_,
+                )
                 .await?;
             Ok(match resp {
-                Some(resp) => {
-                    Some(<A::Resp as Deserialize>::deserialize(resp).map_err(Error::deserialize)?)
-                }
+                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
                 None => None,
             })
         }
@@ -316,23 +321,26 @@ impl<T: OBApp + Sync> AppExt for T {
 }
 
 impl AppExt for dyn AppDyn + Sync {
-    fn send_action<E, A>(
+    fn send_action<A>(
         &self,
         action: A,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<A::Resp>, Error>>
+    ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
     where
-        E: std::error::Error + Send + 'static,
-        A: OBAction + TryInto<ActionType, Error = E> + 'static,
+        A: OBAction + Send + 'static,
     {
         async move {
             let resp = self
-                .send_action_dyn(action.try_into().map_err(Error::other)?, self_)
+                .send_action_dyn(
+                    ActionDetail {
+                        action: action.action_name().into(),
+                        params: ValueMap::deserialize(serde_value::to_value(action)?)?,
+                    },
+                    self_,
+                )
                 .await?;
             Ok(match resp {
-                Some(resp) => {
-                    Some(<A::Resp as Deserialize>::deserialize(resp).map_err(Error::deserialize)?)
-                }
+                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(resp)?),
                 None => None,
             })
         }

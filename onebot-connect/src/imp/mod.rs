@@ -11,7 +11,7 @@ pub mod ws_re;
 use onebot_connect_interface::imp::MessageSource;
 use onebot_connect_interface::imp::*;
 use onebot_connect_interface::Error as OCError;
-use onebot_types::ob12::event::Event;
+use onebot_types::ob12::event::RawEvent;
 use tokio::sync::mpsc;
 
 type CmdSender = mpsc::UnboundedSender<Command>;
@@ -27,7 +27,7 @@ impl TxImpl {
     }
 }
 impl OBImpl for TxImpl {
-    async fn send_event_impl(&self, event: Event) -> Result<(), OCError> {
+    async fn send_event_impl(&self, event: RawEvent) -> Result<(), OCError> {
         self.tx.send(Command::Event(event)).map_err(OCError::closed)
     }
 

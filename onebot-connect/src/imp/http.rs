@@ -4,7 +4,7 @@ use fxhash::FxHashMap;
 use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
 use onebot_types::ob12::{
     self,
-    action::{Action, RespData, RespStatus, RetCode},
+    action::{RawAction, RespData, RespStatus, RetCode}, event::RawEvent,
 };
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
@@ -18,11 +18,11 @@ extern crate http as http_lib;
 use super::*;
 use crate::Error as AllErr;
 
-type EventQueue = Arc<Mutex<VecDeque<Event>>>;
+type EventQueue = Arc<Mutex<VecDeque<RawEvent>>>;
 
 type ActionResponder = oneshot::Sender<HttpResponse<RespData>>;
 type RespMap = FxHashMap<ActionEcho, ActionResponder>;
-type ActionRecv = (Action, ActionResponder);
+type ActionRecv = (RawAction, ActionResponder);
 
 #[derive(Default)]
 struct HttpHandler {
@@ -170,7 +170,7 @@ impl HttpImpl {
         Self { queue, cmd_tx }
     }
 
-    pub fn drain_events(&mut self) -> VecDeque<Event> {
+    pub fn drain_events(&mut self) -> VecDeque<RawEvent> {
         std::mem::take(&mut self.queue.lock())
     }
 }
@@ -178,7 +178,7 @@ impl HttpImpl {
 impl OBImpl for HttpImpl {
     fn send_event_impl(
         &self,
-        event: Event,
+        event: RawEvent,
     ) -> impl std::future::Future<Output = Result<(), OCError>> + Send + '_ {
         async move {
             self.queue.lock().push_back(event);

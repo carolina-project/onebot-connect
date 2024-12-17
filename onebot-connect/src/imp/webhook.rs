@@ -92,7 +92,7 @@ pub struct WebhookImpl {
 }
 
 impl OBImpl for WebhookImpl {
-    async fn send_event_impl(&self, event: Event) -> Result<(), OCError> {
+    async fn send_event_impl(&self, event: RawEvent) -> Result<(), OCError> {
         let resp: Vec<Action> = self
             .http
             .post(&self.inner.url)

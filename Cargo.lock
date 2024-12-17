@@ -744,19 +744,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "ob-types-base"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde-value",
- "thiserror 2.0.4",
-]
-
-[[package]]
 name = "ob-types-macro"
 version = "0.1.0"
 dependencies = [
- "ob-types-base",
  "proc-macro2",
  "quote",
  "syn",
@@ -822,7 +812,6 @@ dependencies = [
 name = "onebot-types"
 version = "0.1.0"
 dependencies = [
- "ob-types-base",
  "ob-types-macro",
  "serde",
  "serde-value",

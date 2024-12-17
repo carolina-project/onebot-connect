@@ -3,6 +3,7 @@ use onebot_connect_interface::{
     app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
     ActionResult, Error as OCError,
 };
+use onebot_types::ob12::action::ActionDetail;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
 
@@ -93,7 +94,7 @@ impl TxAppSide {
 impl OBApp for TxAppSide {
     async fn send_action_impl(
         &self,
-        action: onebot_types::ob12::action::ActionType,
+        action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCError> {
         let (tx, rx) = oneshot::channel();

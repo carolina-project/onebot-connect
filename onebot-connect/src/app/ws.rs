@@ -4,7 +4,10 @@ use onebot_connect_interface::{
     app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
     ClosedReason, ConfigError, Error as OCError,
 };
-use onebot_types::ob12::{self, action::RespData, event::Event};
+use onebot_types::ob12::{
+    action::{RawAction, RespData},
+    event::RawEvent,
+};
 use serde::Deserialize;
 use serde_json::Value as Json;
 use tokio::{net::TcpStream, sync::mpsc};
@@ -39,7 +42,7 @@ impl WSHandler {
         let ActionArgs { action, self_ } = args;
         let echo = generate_echo(8, &self.map);
 
-        let res = serde_json::to_vec(&ob12::action::Action {
+        let res = serde_json::to_vec(&RawAction {
             action,
             echo: Some(echo.clone()),
             self_,
@@ -88,7 +91,7 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMess
 }
 
 pub(super) enum RecvData {
-    Event(Event),
+    Event(RawEvent),
     /// Response data and `echo`
     Response(RespData),
 }

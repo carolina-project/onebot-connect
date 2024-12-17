@@ -2,10 +2,7 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use ::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use onebot_connect_interface::app::{AppExt, Connect};
-use onebot_types::ob12::{
-    action::{Action, RespData, RespError},
-    event::Event,
-};
+use onebot_types::ob12::{action::{RawAction, RespData, RespError}, event::RawEvent};
 use serde_value::Value;
 
 use super::*;
@@ -15,7 +12,7 @@ pub struct HttpMessageSource {
     timeout: i64,
     limit: i64,
     interval_ms: u64,
-    events: VecDeque<Event>,
+    events: VecDeque<RawEvent>,
 }
 
 impl HttpMessageSource {
@@ -78,13 +75,13 @@ pub struct HttpApp {
 impl OBApp for HttpApp {
     async fn send_action_impl(
         &self,
-        action: onebot_types::ob12::action::ActionType,
+        action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<Value>, OCError> {
         let http_resp = self
             .http
             .post(&self.inner.url)
-            .json(&Action {
+            .json(&RawAction {
                 action,
                 echo: None,
                 self_,

@@ -6,11 +6,11 @@ use crate::{
 };
 
 use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
-use onebot_types::ob12::{action::Action, event::Event};
+use onebot_types::ob12::{action::{ActionDetail, RawAction}, event::RawEvent};
 use parking_lot::Mutex;
 use std::{net::SocketAddr, sync::Arc};
 
-type EventResponder = oneshot::Sender<HttpResponse<Vec<Action>>>;
+type EventResponder = oneshot::Sender<HttpResponse<Vec<RawAction>>>;
 
 /// Authorization header and `access_token` query param, choose one to use
 
@@ -34,7 +34,7 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
                 if let Some(tx) = self.actions_map.remove(&id) {
                     let actions = actions
                         .into_iter()
-                        .map(|ActionArgs { action, self_ }| Action {
+                        .map(|ActionArgs { action, self_ }| RawAction {
                             action,
                             echo: None,
                             self_,
@@ -60,10 +60,10 @@ impl CmdHandler<Command, RecvMessage> for WHandler {
     }
 }
 
-impl RecvHandler<(Event, EventResponder), RecvMessage> for WHandler {
+impl RecvHandler<(RawEvent, EventResponder), RecvMessage> for WHandler {
     async fn handle_recv(
         &mut self,
-        recv: (Event, EventResponder),
+        recv: (RawEvent, EventResponder),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
@@ -156,7 +156,7 @@ impl OBApp for WebhookApp {
 
     async fn send_action_impl(
         &self,
-        action: onebot_types::ob12::action::ActionType,
+        action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCError> {
         self.inner.actions.lock().push(ActionArgs { action, self_ });
