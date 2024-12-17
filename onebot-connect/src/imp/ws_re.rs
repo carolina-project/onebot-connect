@@ -41,7 +41,7 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMess
                         RespStatus::Failed,
                         retcode,
                         message,
-                        Default::default(),
+                        serde_value::Value::Option(None),
                     ),
                 };
                 let echo = match echo {

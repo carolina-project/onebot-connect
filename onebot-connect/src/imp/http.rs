@@ -4,7 +4,8 @@ use fxhash::FxHashMap;
 use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
 use onebot_types::ob12::{
     self,
-    action::{RawAction, RespData, RespStatus, RetCode}, event::RawEvent,
+    action::{RawAction, RespData, RespStatus, RetCode},
+    event::RawEvent,
 };
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
@@ -55,7 +56,7 @@ impl CmdHandler<Command, RecvMessage> for HttpHandler {
                         ActionResponse::Error { retcode, message } => ob12::action::RespData {
                             status: RespStatus::Failed,
                             retcode,
-                            data: Default::default(),
+                            data: serde_value::Value::Option(None),
                             message,
                             echo,
                         },
@@ -134,7 +135,6 @@ impl HttpCreate {
         }
     }
 }
-
 
 impl Create for HttpCreate {
     type Error = OCError;

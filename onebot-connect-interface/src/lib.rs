@@ -3,11 +3,12 @@ use std::fmt::{Debug, Display};
 use onebot_types::ob12::action::RespError;
 use serde::{Deserialize, Serialize};
 use serde_value::{DeserializerError, SerializerError};
+use tokio::sync::mpsc::error::SendError;
 
-#[cfg(feature = "imp")]
-pub mod imp;
 #[cfg(feature = "app")]
 pub mod app;
+#[cfg(feature = "imp")]
+pub mod imp;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ClosedReason {
@@ -86,5 +87,11 @@ impl From<SerializerError> for Error {
 impl From<DeserializerError> for Error {
     fn from(value: DeserializerError) -> Self {
         Self::deserialize(value)
+    }
+}
+
+impl<T> From<SendError<T>> for Error {
+    fn from(e: SendError<T>) -> Self {
+        Self::closed(e)
     }
 }

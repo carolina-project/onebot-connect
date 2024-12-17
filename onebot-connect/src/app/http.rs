@@ -2,12 +2,9 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use ::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use onebot_connect_interface::app::{AppExt, Connect};
-use onebot_types::{
-    ob12::{
-        action::{RawAction, RespData, RespError},
-        event::RawEvent,
-    },
-    ValueMap,
+use onebot_types::ob12::{
+    action::{RawAction, RespData, RespError},
+    event::RawEvent,
 };
 
 use super::*;
@@ -82,7 +79,7 @@ impl OBApp for HttpApp {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<ValueMap>, OCError> {
+    ) -> Result<Option<serde_value::Value>, OCError> {
         let http_resp = self
             .http
             .post(&self.inner.url)

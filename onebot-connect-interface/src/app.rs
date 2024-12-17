@@ -27,10 +27,10 @@ mod recv {
 
     use super::*;
 
-    pub type ActionResponder = oneshot::Sender<Result<ValueMap, Error>>;
+    pub type ActionResponder = oneshot::Sender<Result<Value, Error>>;
 
     /// Messages received from connection
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
         Event(RawEvent),
         /// Response after close command
@@ -41,16 +41,18 @@ mod recv {
 
     /// Action args passed to connection with command channel
     /// Response will be sent using `resp_tx`
+    #[derive(Debug, Clone)]
     pub struct ActionArgs {
         pub action: ActionDetail,
         pub self_: Option<BotSelf>,
     }
 
     /// Response args passed to connection.
+    #[derive(Debug, Clone)]
     pub struct RespArgs {
         pub status: RespStatus,
         pub retcode: RetCode,
-        pub data: ValueMap,
+        pub data: Value,
         pub message: String,
     }
 
@@ -59,12 +61,12 @@ mod recv {
             Self {
                 status: RespStatus::Failed,
                 retcode,
-                data: Default::default(),
+                data: Value::Option(None),
                 message: msg.into(),
             }
         }
 
-        pub fn success(data: ValueMap) -> Self {
+        pub fn success(data: Value) -> Self {
             Self {
                 status: RespStatus::Ok,
                 retcode: RetCode::Success,
@@ -153,7 +155,7 @@ pub trait OBApp: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<ValueMap>, Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
 
     /// Get config from connection.
     #[allow(unused)]
@@ -195,7 +197,7 @@ pub trait AppDyn: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<ValueMap>, Error>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
 
     fn get_config<'a, 'b: 'a>(
         &'a self,
@@ -239,7 +241,7 @@ impl<T: OBApp + 'static> AppDyn for T {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<ValueMap>, Error>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
         Box::pin(self.send_action_impl(action, self_))
     }
 

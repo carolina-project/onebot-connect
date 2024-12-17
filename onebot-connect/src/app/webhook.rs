@@ -6,7 +6,10 @@ use crate::{
 };
 
 use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
-use onebot_types::ob12::{action::{ActionDetail, RawAction}, event::RawEvent};
+use onebot_types::ob12::{
+    action::{ActionDetail, RawAction},
+    event::RawEvent,
+};
 use parking_lot::Mutex;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -158,7 +161,7 @@ impl OBApp for WebhookApp {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<ValueMap>, OCError> {
+    ) -> Result<Option<serde_value::Value>, OCError> {
         self.inner.actions.lock().push(ActionArgs { action, self_ });
         Ok(None)
     }

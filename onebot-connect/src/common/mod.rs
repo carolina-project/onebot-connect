@@ -7,7 +7,11 @@ pub mod ws;
 pub mod storage;
 
 use std::{
-    fmt::{Debug, Display}, future::Future, ops::{Deref, DerefMut}, path::PathBuf, sync::Arc
+    fmt::{Debug, Display},
+    future::Future,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    sync::Arc,
 };
 
 use http::HeaderMap;
@@ -99,16 +103,19 @@ pub trait UploadStorage: Send + Sync {
         upload: UploadFileReq,
     ) -> impl Future<Output = Result<Option<Uuid>, UploadError>>;
 
-    fn get_url(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<UrlUpload>, UploadError>>;
+    fn get_url(
+        &self,
+        uuid: &Uuid,
+    ) -> impl Future<Output = Result<Option<FileInfo<UrlUpload>>, UploadError>>;
 
     fn get_store_state(&self, uuid: &Uuid)
         -> impl Future<Output = Result<StoreState, UploadError>>;
 
     fn is_cached(&self, uuid: &Uuid) -> impl Future<Output = Result<bool, UploadError>>;
 
-    fn get_path(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<PathBuf>, UploadError>>;
+    fn get_path(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<FileInfo<PathBuf>>, UploadError>>;
 
-    fn get_data(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<Vec<u8>>, UploadError>>;
+    fn get_data(&self, uuid: &Uuid) -> impl Future<Output = Result<Option<FileInfo<Vec<u8>>>, UploadError>>;
 
     fn get_fragmented(
         &self,
