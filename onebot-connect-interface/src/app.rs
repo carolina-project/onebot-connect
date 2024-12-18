@@ -66,13 +66,13 @@ mod recv {
             }
         }
 
-        pub fn success(data: Value) -> Self {
-            Self {
+        pub fn success<T: Serialize>(data: T) -> Result<Self, serde_value::SerializerError> {
+            Ok(Self {
                 status: RespStatus::Ok,
                 retcode: RetCode::Success,
-                data,
+                data: serde_value::to_value(data)?,
                 message: Default::default(),
-            }
+            })
         }
     }
 

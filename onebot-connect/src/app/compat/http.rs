@@ -1,15 +1,16 @@
 use super::*;
 use crate::{
-    app::{http::HttpInner, HttpInnerShared},
+    app::HttpInnerShared,
     common::{http_s::HttpResponse, *},
     Error as AllErr,
 };
+use data::AppData;
 use onebot_connect_interface::ClosedReason;
 use onebot_types::{
     compat::{event::IntoOB12EventAsync, message::IntoOB12Seg},
     ob11::{
         event::{EventKind, MessageEvent},
-        Event as OB11Event, MessageSeg,
+        MessageSeg, RawEvent as OB11Event,
     },
     ob12::{event as ob12e, message as ob12m},
 };
@@ -64,7 +65,6 @@ impl OBApp for OB12HttpApp {
         action: ob12::action::ActionType,
         self_: Option<ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCErr> {
-        
     }
 
     fn clone_app(&self) -> Self {

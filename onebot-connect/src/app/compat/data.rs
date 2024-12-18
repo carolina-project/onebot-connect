@@ -1,44 +1,35 @@
-use std::{collections::HashMap, fmt::Display, ops::Deref, str::FromStr, sync::Arc};
+use std::{collections::HashMap, fmt::Display, ops::Deref, sync::Arc};
 
 use http::{header::ToStrError, HeaderMap};
 use onebot_connect_interface::{app::RecvMessage as AppMsg, upload::*};
 use parking_lot::RwLock;
-use serde::{de::Error as DeErr, ser::Error as SerErr, Deserialize};
+use serde::{de::Error as DeErr, ser::Error as SerErr};
 use serde_value::{DeserializerError, SerializerError};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{
-    common::{
-        self,
-        storage::{self, LocalFs, OBFileStorage, FS},
-    },
-    Error as AllErr,
-};
+use crate::{common::storage::OBFileStorage, Error as AllErr};
 
 use onebot_types::{
     base::RawMessageSeg,
     compat::{
         action::{
-            bot::OB11File, CompatAction, FromOB11Resp, IntoOB11Action, IntoOB11ActionAsync,
-            SUPPORTED_ACTIONS,
+            CompatAction, FromOB11Resp, IntoOB11Action, IntoOB11ActionAsync, SUPPORTED_ACTIONS,
         },
-        compat_self,
         event::{IntoOB12Event, IntoOB12EventAsync},
         message::{
             CompatSegment, FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync,
         },
     },
     ob11::{
-        action::{self as ob11a, ActionType, RawAction},
+        action::{self as ob11a, RawAction},
         event::{
-            self as ob11e, EventKind, MessageEvent, MetaDetail, MetaEvent, NoticeEvent,
+            EventKind, MessageEvent, MetaDetail, MetaEvent, NoticeDetail, NoticeEvent,
             RequestDetail, RequestEvent,
         },
         message as ob11m, MessageSeg, RawEvent,
     },
     ob12::{self, action as ob12a, event as ob12e, message as ob12m},
-    ValueMap,
 };
 
 use onebot_connect_interface::{
@@ -147,7 +138,7 @@ struct AppDataInner {
 
 /// Connection status of OneBot 11 connection
 #[derive(Default, Clone)]
-struct AppData(Arc<AppDataInner>);
+pub(crate) struct AppData(Arc<AppDataInner>);
 
 impl Deref for AppData {
     type Target = AppDataInner;
@@ -159,9 +150,7 @@ impl Deref for AppData {
 
 #[inline]
 fn mk_response<R: serde::Serialize>(resp: R) -> Result<ActionConverted, AllErr> {
-    Ok(ActionConverted::Respond(RespArgs::success(
-        serde_value::to_value(resp)?,
-    )))
+    Ok(ActionConverted::Respond(RespArgs::success(resp)?))
 }
 #[inline]
 fn mk_missing_file() -> Result<ActionConverted, AllErr> {
@@ -358,12 +347,20 @@ impl AppData {
 
     async fn convert_notice_event<A: OBApp>(
         &self,
-        msg: NoticeEvent,
+        notice: NoticeDetail,
         _app: &A,
-    ) -> Result<ob12e::NoticeEvent, OCErr> {
+    ) -> Result<ob12e::Event, OCErr> {
+        let notice: NoticeEvent = notice.try_into()?;
+
+        Ok(notice
+            .into_ob12((
+                self.bot_state.read().self_.user_id.clone(),
+                |_| async move { Uuid::new_v4().to_string() },
+            ))
+            .await?)
     }
 
-    async fn convert_event<A: OBApp>(
+    pub async fn convert_event<A: OBApp>(
         &self,
         raw_event: RawEvent,
         cmd_tx: mpsc::UnboundedSender<AppMsg>,
@@ -382,7 +379,9 @@ impl AppData {
                 .await?
                 .try_into()?,
             EventKind::Request(req) => self.convert_req_event(req, app).await?.try_into()?,
-            EventKind::Notice(_) => todo!(),
+            EventKind::Notice(notice) => {
+                self.convert_notice_event(notice, app).await?.try_into()?
+            }
         };
         Ok(ob12e::RawEvent {
             id: Uuid::new_v4().to_string(),
@@ -442,12 +441,42 @@ impl AppData {
             },
             extra: Default::default(),
         };
-        Ok(ActionConverted::Respond(RespArgs::success(
-            serde_value::to_value(resp)?,
-        )))
+        Ok(ActionConverted::Respond(RespArgs::success(resp)?))
     }
 
-    async fn convert_action<A: OBApp>(
+    async fn handle_upload(&self, action: ob12a::UploadFile) -> Result<ActionConverted, AllErr> {
+        let ob12a::UploadFile(ob12a::FileOpt {
+            kind,
+            name,
+            sha256: _,
+        }) = action;
+        let file_id = self
+            .storage
+            .upload(
+                name,
+                match kind {
+                    ob12a::UploadKind::Url { headers, url, .. } => {
+                        UploadKind::Url(UrlUpload { url, headers })
+                    }
+                    ob12a::UploadKind::Path { path, .. } => UploadKind::Path(path.into()),
+                    ob12a::UploadKind::Data { data, .. } => UploadKind::Data(data.0.into()),
+                    ob12a::UploadKind::Other { r#type, .. } => {
+                        return Err(
+                            UploadError::unsupported(format!("upload type `{}`", r#type)).into(),
+                        )
+                    }
+                },
+            )
+            .await?;
+        Ok(ActionConverted::Respond(RespArgs::success(
+            ob12a::Uploaded {
+                file_id,
+                extra: Default::default(),
+            },
+        )?))
+    }
+
+    pub async fn convert_action<A: OBApp>(
         &self,
         action: ob12a::RawAction,
         app: &A,
@@ -475,8 +504,8 @@ impl AppData {
             }
             ob12a::ActionType::GetSupportedActions(_) => {
                 return Ok(ActionConverted::Respond(RespArgs::success(
-                    serde_value::to_value(SUPPORTED_ACTIONS)?,
-                )))
+                    SUPPORTED_ACTIONS,
+                )?))
             }
             ob12a::ActionType::GetStatus(action) => convert_action_default(action)?,
             ob12a::ActionType::GetVersion(action) => convert_action_default(action)?,
@@ -492,9 +521,7 @@ impl AppData {
             ob12a::ActionType::GetFileFragmented(action) => {
                 let resp = self.storage.get_fragmented(action).await?;
                 return match resp {
-                    Some(resp) => Ok(ActionConverted::Respond(RespArgs::success(
-                        serde_value::to_value(resp)?,
-                    ))),
+                    Some(resp) => Ok(ActionConverted::Respond(RespArgs::success(resp)?)),
                     None => mk_missing_file(),
                 };
             }
@@ -504,31 +531,21 @@ impl AppData {
                     .try_into()?;
                 return Ok(ActionConverted::Send(RawAction { detail, echo }));
             }
+            ob12a::ActionType::UploadFile(action) => return self.handle_upload(action).await,
+            ob12a::ActionType::UploadFileFragmented(ob12a::UploadFileFragmented(req)) => {
+                use ob12a::*;
+                return Ok(ActionConverted::Respond(RespArgs::success(
+                    UploadFragmented {
+                        file_id: self.storage.upload_fragmented(req).await?,
+                        extra: Default::default(),
+                    },
+                )?));
+            }
             action => {
                 return Err(
                     OCErr::not_supported(format!("unsupported action: {:?}", action)).into(),
                 )
             }
-            ob12a::ActionType::UploadFile(ob12a::UploadFile(ob12a::FileOpt {
-                kind,
-                name,
-                sha256: _,
-            })) => {
-                self.storage
-                    .upload(
-                        name,
-                        match kind {
-                            ob12a::UploadKind::Url { headers, url, .. } => {
-                                UploadKind::Url(UrlUpload { url, headers })
-                            }
-                            ob12a::UploadKind::Path { path, .. } => UploadKind::Path(path),
-                            ob12a::UploadKind::Data { data, .. } => UploadKind::Data(data),
-                            ob12a::UploadKind::Other { r#type, extra } => return,
-                        },
-                    )
-                    .await
-            }
-            ob12a::ActionType::UploadFileFragmented(_) => todo!(),
         };
 
         Ok(ActionConverted::Send(RawAction {
