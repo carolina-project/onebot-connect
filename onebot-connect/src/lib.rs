@@ -2,6 +2,7 @@ use std::{fmt::Display, io};
 
 use onebot_connect_interface::{upload::UploadError, Error as OCError};
 use serde_value::{DeserializerError, SerializerError};
+use tokio::sync::mpsc;
 
 #[cfg(feature = "app")]
 pub mod app;
@@ -62,6 +63,12 @@ impl From<UploadError> for Error {
 impl From<SerializerError> for Error {
     fn from(e: SerializerError) -> Self {
         Self::OneBotConnect(OCError::serialize(e))
+    }
+}
+
+impl<T> From<mpsc::error::SendError<T>> for Error {
+    fn from(value: mpsc::error::SendError<T>) -> Self {
+        Self::OneBotConnect(value.into())
     }
 }
 

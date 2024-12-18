@@ -9,7 +9,7 @@ use hyper::{
 use super::*;
 
 pub struct WebhookCreate {
-    impl_inner: WebhookImplInner,
+    url: String,
     user_agent: String,
     auth_header: Option<String>,
     impl_name: String,
@@ -26,7 +26,7 @@ impl WebhookCreate {
         impl_name: impl Into<String>,
     ) -> Self {
         Self {
-            impl_inner: WebhookImplInner { url: url.into() },
+            url: url.into(),
             user_agent: user_agent.into(),
             auth_header: None,
             impl_name: impl_name.into(),
@@ -69,7 +69,7 @@ impl Create for WebhookCreate {
 
         Ok((
             RxMessageSource::new(msg_rx),
-            WebhookImplProvider::new(self.impl_inner, msg_tx, http),
+            WebhookImplProvider::new(self.url, msg_tx, http),
             (),
         ))
     }
@@ -82,18 +82,19 @@ impl Create for WebhookCreate {
 
 struct WebhookImplInner {
     url: String,
+    http: reqwest::Client,
 }
 
 #[derive(Clone)]
 pub struct WebhookImpl {
     inner: Arc<WebhookImplInner>,
     msg_tx: MessageTx,
-    http: reqwest::Client,
 }
 
 impl OBImpl for WebhookImpl {
     async fn send_event_impl(&self, event: RawEvent) -> Result<(), OCError> {
         let resp: Vec<Action> = self
+            .inner
             .http
             .post(&self.inner.url)
             .json(&event)
@@ -120,19 +121,17 @@ impl OBImpl for WebhookImpl {
 pub struct WebhookImplProvider {
     impl_inner: Arc<WebhookImplInner>,
     msg_tx: MessageTx,
-    http: reqwest::Client,
 }
 
 impl WebhookImplProvider {
-    fn new(
-        impl_inner: impl Into<Arc<WebhookImplInner>>,
-        msg_tx: MessageTx,
-        http: reqwest::Client,
-    ) -> Self {
+    fn new(url: impl Into<String>, msg_tx: MessageTx, http: reqwest::Client) -> Self {
         Self {
-            impl_inner: impl_inner.into(),
+            impl_inner: WebhookImplInner {
+                url: url.into(),
+                http,
+            }
+            .into(),
             msg_tx,
-            http,
         }
     }
 }
@@ -144,7 +143,6 @@ impl OBImplProvider for WebhookImplProvider {
         Ok(WebhookImpl {
             inner: self.impl_inner.clone(),
             msg_tx: self.msg_tx.clone(),
-            http: self.http.clone(),
         })
     }
 }

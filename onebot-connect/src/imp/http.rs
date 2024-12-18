@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, ops::Deref, sync::Arc, time::Duration};
 
 use fxhash::FxHashMap;
 use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
@@ -18,7 +18,7 @@ extern crate http as http_lib;
 use super::*;
 use crate::Error as AllErr;
 
-type EventQueue = Arc<Mutex<VecDeque<RawEvent>>>;
+type EventQueue = Mutex<VecDeque<RawEvent>>;
 
 type ActionResponder = oneshot::Sender<HttpResponse<RespData>>;
 type RespMap = FxHashMap<ActionEcho, ActionResponder>;
@@ -160,17 +160,60 @@ impl Create for HttpCreate {
     }
 }
 
-pub struct HttpImpl {
-    queue: EventQueue,
+type SharedEventTx = oneshot::Sender<Arc<VecDeque<RawEvent>>>;
+
+pub struct HttpImplInner {
+    queue: Mutex<VecDeque<RawEvent>>,
+    waiting_queue: Mutex<Vec<SharedEventTx>>,
     cmd_tx: CmdSender,
 }
+
+/// An shared OneBot implementation http server.
+/// Events are stored in a queue, waiting for `get_latest_events` action.
+#[derive(Clone)]
+pub struct HttpImpl {
+    inner: Arc<HttpImplInner>,
+}
+impl Deref for HttpImpl {
+    type Target = HttpImplInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl HttpImpl {
-    pub fn new(queue: EventQueue, cmd_tx: CmdSender) -> Self {
-        Self { queue, cmd_tx }
+    pub fn new(cmd_tx: CmdSender) -> Self {
+        Self {
+            inner: HttpImplInner {
+                queue: Default::default(),
+                cmd_tx,
+                waiting_queue: Default::default(),
+            }
+            .into(),
+        }
     }
 
-    pub fn drain_events(&mut self) -> VecDeque<RawEvent> {
-        std::mem::take(&mut self.queue.lock())
+    pub async fn get_events(&mut self, limit: usize, timeout: Duration) -> Arc<VecDeque<RawEvent>> {
+        let mut queue = self.queue.lock();
+        if queue.len() > 0 {
+            if limit == 0 {
+                Arc::new(std::mem::take(&mut queue))
+            } else {
+                Arc::new(queue.drain(..limit).collect())
+            }
+        } else {
+            let (tx, rx) = oneshot::channel();
+            self.waiting_queue.lock().push(tx);
+            tokio::select! {
+                _ = tokio::time::sleep(timeout) => {
+                    Default::default()
+                },
+                event = rx => {
+                    event.unwrap()
+                }
+            }
+        }
     }
 }
 
@@ -193,15 +236,13 @@ impl OBImpl for HttpImpl {
 }
 
 pub struct HttpImplProvider {
-    queue: EventQueue,
-    cmd_tx: CmdSender,
+    http_impl: HttpImpl,
 }
 
 impl HttpImplProvider {
     pub fn new(cmd_tx: CmdSender) -> Self {
         Self {
-            queue: Default::default(),
-            cmd_tx,
+            http_impl: HttpImpl::new(cmd_tx),
         }
     }
 }
@@ -210,6 +251,6 @@ impl OBImplProvider for HttpImplProvider {
     type Output = HttpImpl;
 
     fn provide(&mut self) -> Result<Self::Output, OCError> {
-        Ok(HttpImpl::new(self.queue.clone(), self.cmd_tx.clone()))
+        Ok(self.http_impl.clone())
     }
 }

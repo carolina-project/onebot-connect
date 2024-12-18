@@ -38,7 +38,7 @@ pub enum ActionResponse {
     Ok(Value),
     Error { retcode: RetCode, message: String },
 }
-/// Messages received from connection
+/// Implementation side messages received from connection
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RecvMessage {
     Action(Action),

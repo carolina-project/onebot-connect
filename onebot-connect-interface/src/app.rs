@@ -29,7 +29,7 @@ mod recv {
 
     pub type ActionResponder = oneshot::Sender<Result<Value, Error>>;
 
-    /// Messages received from connection
+    /// Application side messages received from connection
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub enum RecvMessage {
         Event(RawEvent),

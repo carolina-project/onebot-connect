@@ -133,11 +133,11 @@ impl Connect for WebhookConnect {
 pub struct WebhookAppInner {
     event_id: String,
     actions: Mutex<Vec<ActionArgs>>,
+    cmd_tx: mpsc::UnboundedSender<Command>,
 }
 pub struct WebhookApp {
     is_owner: bool,
     inner: Arc<WebhookAppInner>,
-    cmd_tx: mpsc::UnboundedSender<Command>,
 }
 impl WebhookApp {
     pub(crate) fn new(event_id: impl Into<String>, cmd_tx: mpsc::UnboundedSender<Command>) -> Self {
@@ -146,9 +146,9 @@ impl WebhookApp {
             inner: WebhookAppInner {
                 event_id: event_id.into(),
                 actions: Default::default(),
+                cmd_tx,
             }
             .into(),
-            cmd_tx,
         }
     }
 }
@@ -170,14 +170,14 @@ impl OBApp for WebhookApp {
         Self {
             is_owner: false,
             inner: self.inner.clone(),
-            cmd_tx: self.cmd_tx.clone(),
         }
     }
 
     async fn release(&mut self) -> Result<(), OCError> {
         if self.is_owner {
             let actions = std::mem::take(&mut *self.inner.actions.lock());
-            self.cmd_tx
+            self.inner
+                .cmd_tx
                 .send(Command::Respond(self.inner.event_id.clone(), actions))
                 .map_err(OCError::closed)
         } else {
