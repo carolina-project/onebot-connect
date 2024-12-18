@@ -1,7 +1,6 @@
 use std::{fmt::Display, io};
 
-use common::UploadError;
-use onebot_connect_interface::Error as OCError;
+use onebot_connect_interface::{upload::UploadError, Error as OCError};
 use serde_value::{DeserializerError, SerializerError};
 
 #[cfg(feature = "app")]
@@ -30,8 +29,6 @@ pub enum Error {
     #[cfg(feature = "http")]
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
-    #[error(transparent)]
-    Upload(#[from] UploadError),
     #[error("{0}")]
     Other(String),
 }
@@ -53,6 +50,12 @@ pub enum RecvError {
 impl From<DeserializerError> for Error {
     fn from(e: DeserializerError) -> Self {
         Self::OneBotConnect(OCError::deserialize(e))
+    }
+}
+
+impl From<UploadError> for Error {
+    fn from(value: UploadError) -> Self {
+        Self::OneBotConnect(value.into())
     }
 }
 

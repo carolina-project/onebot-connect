@@ -1,10 +1,15 @@
+use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::{io, path::Path};
 
 use dashmap::mapref::one::{Ref as MapRef, RefMut as MapRefMut};
 use dashmap::DashMap;
+use http::{HeaderMap, HeaderName, HeaderValue};
+use onebot_connect_interface::upload::*;
 use onebot_types::ob12::action::{GetFileReq, UploadData};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -139,8 +144,9 @@ pub struct OBFileStorage<F: FS = LocalFs> {
     fs: F,
     lazy: bool,
     upd_path_base: String,
-    map: DashMap<Uuid, FileStored>,
-    frag_map: DashMap<Uuid, (String, PathBuf)>,
+    map: DashMap<String, FileStored>,
+    /// Map for storing uploading files
+    frag_map: DashMap<String, (String, PathBuf)>,
     http: reqwest::Client,
 }
 
@@ -157,57 +163,77 @@ impl<F: FS + Default> Default for OBFileStorage<F> {
     }
 }
 
+fn hashmap_to_headers(map: &HashMap<String, String>) -> Result<HeaderMap, http::Error> {
+    let mut header_map = HeaderMap::new();
+    for (name, value) in map {
+        header_map.insert(HeaderName::from_str(&name)?, HeaderValue::from_str(&value)?);
+    }
+
+    Ok(header_map)
+}
+
 impl<F: FS> OBFileStorage<F> {
     async fn download_file(
         &self,
         path: impl AsRef<Path>,
-        url: UrlUpload,
+        url: &UrlUpload,
     ) -> Result<(), UploadError> {
-        let mut req = self.http.get(url.url);
-        if let Some(headers) = url.headers {
-            req = req.headers(headers);
+        let mut req = self.http.get(&url.url);
+        if let Some(headers) = &url.headers {
+            req = req.headers(hashmap_to_headers(&headers).map_err(UploadError::other)?);
         }
         Ok(self
             .fs
-            .write(path, 0, &req.send().await?.bytes().await?)
-            .await?)
+            .write(
+                path,
+                0,
+                &req.send()
+                    .await
+                    .map_err(UploadError::other)?
+                    .bytes()
+                    .await
+                    .map_err(UploadError::other)?,
+            )
+            .await
+            .map_err(UploadError::other)?)
     }
 
     #[inline]
-    fn mk_file_path(&self, uuid: &Uuid, file_name: &str) -> PathBuf {
+    fn mk_file_path(&self, id: &str, file_name: &str) -> PathBuf {
         let file: PathBuf = file_name.into();
         let full_path: PathBuf = match file.extension() {
-            Some(ext) => format!("{}/{uuid}.{}", self.upd_path_base, ext.to_string_lossy()).into(),
-            None => format!("{}/{uuid}.upload", self.upd_path_base).into(),
+            Some(ext) => format!("{}/{id}.{}", self.upd_path_base, ext.to_string_lossy()).into(),
+            None => format!("{}/{id}.upload", self.upd_path_base).into(),
         };
 
         full_path.into()
     }
 
     #[inline]
-    fn get_file(&self, uuid: &Uuid) -> Result<MapRef<'_, Uuid, FileStored>, UploadError> {
+    fn get_file(&self, id: &str) -> Result<MapRef<'_, String, FileStored>, UploadError> {
         self.map
-            .get(uuid)
-            .ok_or_else(|| UploadError::not_exists(uuid))
+            .get(id)
+            .ok_or_else(|| UploadError::not_exists(id.to_owned()))
     }
 
     #[inline]
-    fn get_file_mut(&self, uuid: &Uuid) -> Result<MapRefMut<'_, Uuid, FileStored>, UploadError> {
+    fn get_file_mut(&self, id: &str) -> Result<MapRefMut<'_, String, FileStored>, UploadError> {
         self.map
-            .get_mut(uuid)
-            .ok_or_else(|| UploadError::not_exists(uuid))
+            .get_mut(id)
+            .ok_or_else(|| UploadError::not_exists(id.to_owned()))
     }
 
-    fn random_file(&self, file_name: &str) -> (Uuid, PathBuf) {
-        let uuid = Uuid::new_v4();
+    fn random_file(&self, file_name: &str) -> (String, PathBuf) {
+        let uuid = Uuid::new_v4().to_string();
 
-        (uuid, self.mk_file_path(&uuid, file_name))
+        let path = self.mk_file_path(&uuid, file_name);
+        (uuid, path)
     }
 
     async fn load_file_path(
         &self,
-        uuid: &Uuid,
-        file: MapRef<'_, Uuid, FileStored>,
+        id: &str,
+        file: MapRef<'_, String, FileStored>,
     ) -> Result<PathBuf, UploadError> {
         Ok(match &file.source {
             FileSource::Url { url, path } => {
@@ -215,13 +241,13 @@ impl<F: FS> OBFileStorage<F> {
                     path.clone()
                 } else {
                     // if file hasn't cached
-                    let full_path = self.mk_file_path(uuid, &file.file_name);
+                    let full_path = self.mk_file_path(id, &file.file_name);
                     let url = url.clone();
                     drop(file);
 
-                    self.download_file(&full_path, url).await?;
+                    self.download_file(&full_path, &url).await?;
                     // record file path
-                    let mut item = self.get_file_mut(uuid)?;
+                    let mut item = self.get_file_mut(id)?;
                     match &mut item.source {
                         FileSource::Url { url: _, path } => {
                             *path = Some(full_path.clone());
@@ -230,7 +256,7 @@ impl<F: FS> OBFileStorage<F> {
                         FileSource::Path(_) => {
                             return Err(UploadError::other(format!(
                                 "`{}`: expected `UploadSource::Url`",
-                                uuid
+                                id
                             )))
                         }
                     }
@@ -248,18 +274,21 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         &self,
         file_name: impl AsRef<str>,
         upload: UploadKind,
-    ) -> Result<Uuid, UploadError> {
+    ) -> Result<String, UploadError> {
         let (uuid, full_path) = self.random_file(file_name.as_ref());
         match upload {
             UploadKind::Data(data) => {
-                self.fs.write(full_path, 0, &data).await?;
+                self.fs
+                    .write(full_path, 0, &data)
+                    .await
+                    .map_err(UploadError::other)?;
             }
             UploadKind::Url(url) => {
                 if !self.lazy {
-                    self.download_file(&full_path, url.clone()).await?;
+                    self.download_file(&full_path, &url).await?;
                 }
                 self.map.insert(
-                    uuid.clone(),
+                    uuid.to_string(),
                     FileStored {
                         source: FileSource::Url {
                             url,
@@ -271,7 +300,7 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
             }
             UploadKind::Path(path) => {
                 self.map.insert(
-                    uuid.clone(),
+                    uuid.to_string(),
                     FileStored {
                         source: FileSource::Path(path),
                         file_name: file_name.as_ref().to_owned(),
@@ -280,10 +309,13 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
             }
         };
 
-        Ok(uuid)
+        Ok(uuid.to_string())
     }
 
-    async fn upload_fragmented(&self, upload: UploadFileReq) -> Result<Option<Uuid>, UploadError> {
+    async fn upload_fragmented(
+        &self,
+        upload: UploadFileReq,
+    ) -> Result<Option<String>, UploadError> {
         match upload {
             UploadFileReq::Prepare {
                 name,
@@ -291,8 +323,8 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
                 ..
             } => {
                 let (uuid, full_path) = self.random_file(&name);
-                self.frag_map.insert(uuid, (name, full_path));
-                Ok(Some(uuid))
+                self.frag_map.insert(uuid.to_string(), (name, full_path));
+                Ok(Some(uuid.to_string()))
             }
             UploadFileReq::Transfer {
                 file_id,
@@ -300,22 +332,23 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
                 data,
                 ..
             } => {
-                let uuid = Uuid::parse_str(&file_id)?;
-                let Some(res) = self.frag_map.get(&uuid) else {
-                    return Err(UploadError::NotExists(uuid));
+                let Some(res) = self.frag_map.get(&file_id) else {
+                    return Err(UploadError::NotExists(file_id));
                 };
 
-                self.fs.write(&res.1, offset as u64, &data).await?;
+                self.fs
+                    .write(&res.1, offset as u64, &data)
+                    .await
+                    .map_err(UploadError::other)?;
                 Ok(None)
             }
             UploadFileReq::Finish {
                 file_id, sha256: _, ..
             } => {
-                let uuid = Uuid::parse_str(&file_id)?;
-                let Some((_, (file_name, path))) = self.frag_map.remove(&uuid) else {
-                    return Err(UploadError::NotExists(uuid));
+                let Some((_, (file_name, path))) = self.frag_map.remove(&file_id) else {
+                    return Err(UploadError::NotExists(file_id));
                 };
-                let new_uuid = Uuid::new_v4();
+                let new_uuid = Uuid::new_v4().to_string();
                 self.map.insert(
                     new_uuid.clone(),
                     FileStored {
@@ -329,8 +362,11 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         }
     }
 
-    async fn get_url(&self, uuid: &Uuid) -> Result<Option<FileInfo<UrlUpload>>, UploadError> {
-        let Some(file) = self.map.get(uuid) else {
+    async fn get_url(
+        &self,
+        id: impl AsRef<str>,
+    ) -> Result<Option<FileInfo<UrlUpload>>, UploadError> {
+        let Some(file) = self.map.get(id.as_ref()) else {
             return Ok(None);
         };
         match &file.source {
@@ -342,8 +378,11 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         }
     }
 
-    async fn get_path(&self, uuid: &Uuid) -> Result<Option<FileInfo<PathBuf>>, UploadError> {
-        let Some(file) = self.map.get(uuid) else {
+    async fn get_path(
+        &self,
+        id: impl AsRef<str>,
+    ) -> Result<Option<FileInfo<PathBuf>>, UploadError> {
+        let Some(file) = self.map.get(id.as_ref()) else {
             return Ok(None);
         };
         let name = file.file_name.clone();
@@ -352,10 +391,10 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
                 if let Some(path) = path {
                     path.clone()
                 } else {
-                    let full_path = self.mk_file_path(uuid, &file.file_name);
+                    let full_path = self.mk_file_path(id.as_ref(), &file.file_name);
                     let url = url.clone();
                     drop(file);
-                    self.download_file(&full_path, url).await?;
+                    self.download_file(&full_path, &url).await?;
                     full_path
                 }
             }
@@ -364,16 +403,23 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         Ok(Some(FileInfo { name, inner }))
     }
 
-    async fn get_data(&self, uuid: &Uuid) -> Result<Option<FileInfo<Vec<u8>>>, UploadError> {
-        let Some(file) = self.map.get(uuid) else {
+    async fn get_data(
+        &self,
+        id: impl AsRef<str>,
+    ) -> Result<Option<FileInfo<Vec<u8>>>, UploadError> {
+        let Some(file) = self.map.get(id.as_ref()) else {
             return Ok(None);
         };
         let name = file.file_name.clone();
-        let path = self.load_file_path(uuid, file).await?;
+        let path = self.load_file_path(id.as_ref(), file).await?;
 
         Ok(Some(FileInfo {
             name,
-            inner: self.fs.read_to_end(path, 0).await?,
+            inner: self
+                .fs
+                .read_to_end(path, 0)
+                .await
+                .map_err(UploadError::other)?,
         }))
     }
 
@@ -381,8 +427,7 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         &self,
         get: GetFileFragmented,
     ) -> Result<Option<GetFileFrag>, UploadError> {
-        let uuid = Uuid::from_str(&get.file_id)?;
-        let Some(file) = self.map.get(&uuid) else {
+        let Some(file) = self.map.get(&get.file_id) else {
             return Ok(None);
         };
         Ok(Some(match get.req {
@@ -390,8 +435,9 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
                 name: file.file_name.clone(),
                 total_size: self
                     .fs
-                    .metadata(self.load_file_path(&uuid, file).await?)
-                    .await?
+                    .metadata(self.load_file_path(&get.file_id, file).await?)
+                    .await
+                    .map_err(UploadError::other)?
                     .size() as i64,
                 sha256: None,
             },
@@ -399,18 +445,19 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
                 data: UploadData(
                     self.fs
                         .read(
-                            self.load_file_path(&uuid, file).await?,
+                            self.load_file_path(&get.file_id, file).await?,
                             offset as _,
                             size as _,
                         )
-                        .await?,
+                        .await
+                        .map_err(UploadError::other)?,
                 ),
             },
         }))
     }
 
-    async fn is_cached(&self, uuid: &Uuid) -> Result<bool, UploadError> {
-        let file = self.get_file(uuid)?;
+    async fn is_cached(&self, id: impl AsRef<str>) -> Result<bool, UploadError> {
+        let file = self.get_file(id.as_ref())?;
 
         match &file.source {
             FileSource::Url { url: _, path } => Ok(path.is_some()),
@@ -418,8 +465,8 @@ impl<F: FS> UploadStorage for OBFileStorage<F> {
         }
     }
 
-    async fn get_store_state(&self, uuid: &Uuid) -> Result<StoreState, UploadError> {
-        let file = self.get_file(uuid)?;
+    async fn get_store_state(&self, id: impl AsRef<str>) -> Result<StoreState, UploadError> {
+        let file = self.get_file(id.as_ref())?;
 
         match &file.source {
             FileSource::Url { url, path } => {

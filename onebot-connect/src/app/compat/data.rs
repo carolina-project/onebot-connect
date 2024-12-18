@@ -1,14 +1,7 @@
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    ops::Deref,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, fmt::Display, ops::Deref, str::FromStr, sync::Arc};
 
 use http::{header::ToStrError, HeaderMap};
-use onebot_connect_interface::app::RecvMessage as AppMsg;
+use onebot_connect_interface::{app::RecvMessage as AppMsg, upload::*};
 use parking_lot::RwLock;
 use serde::{de::Error as DeErr, ser::Error as SerErr, Deserialize};
 use serde_value::{DeserializerError, SerializerError};
@@ -19,7 +12,6 @@ use crate::{
     common::{
         self,
         storage::{self, LocalFs, OBFileStorage, FS},
-        FileInfo, UploadError, UploadKind, UploadStorage, UrlUpload,
     },
     Error as AllErr,
 };
@@ -39,7 +31,10 @@ use onebot_types::{
     },
     ob11::{
         action::{self as ob11a, ActionType, RawAction},
-        event::{self as ob11e, EventKind, MessageEvent, MetaDetail, MetaEvent, NoticeEvent, RequestEvent},
+        event::{
+            self as ob11e, EventKind, MessageEvent, MetaDetail, MetaEvent, NoticeEvent,
+            RequestDetail, RequestEvent,
+        },
         message as ob11m, MessageSeg, RawEvent,
     },
     ob12::{self, action as ob12a, event as ob12e, message as ob12m},
@@ -198,7 +193,7 @@ fn headers_to_hashmap(headers: HeaderMap) -> Result<HashMap<String, String>, ToS
 }
 
 impl AppData {
-    async fn trace_file(&self, file: FileSeg) -> Result<Uuid, UploadError> {
+    async fn trace_file(&self, file: FileSeg) -> Result<String, UploadError> {
         match file.url {
             Some(url) => {
                 self.storage
@@ -210,10 +205,9 @@ impl AppData {
     }
 
     async fn find_file(&self, id: &str) -> Result<String, UploadError> {
-        let uuid = Uuid::from_str(id)?;
-        match self.storage.get_store_state(&uuid).await? {
-            common::StoreState::NotCached(url) => Ok(url.url),
-            common::StoreState::Cached(path) => Ok(path),
+        match self.storage.get_store_state(&id).await? {
+            StoreState::NotCached(url) => Ok(url.url),
+            StoreState::Cached(path) => Ok(path),
         }
     }
 
@@ -355,10 +349,11 @@ impl AppData {
 
     async fn convert_req_event<A: OBApp>(
         &self,
-        msg: RequestEvent,
+        req: RequestDetail,
         _app: &A,
     ) -> Result<ob12e::RequestEvent, OCErr> {
-        Ok(msg.into_ob12(self.bot_state.read().self_.user_id.clone())?)
+        let req: RequestEvent = req.try_into()?;
+        Ok(req.into_ob12(self.bot_state.read().self_.user_id.clone())?)
     }
 
     async fn convert_notice_event<A: OBApp>(
@@ -386,7 +381,7 @@ impl AppData {
                 .convert_meta_event(time, meta, cmd_tx, app)
                 .await?
                 .try_into()?,
-            EventKind::Request(req) => ,
+            EventKind::Request(req) => self.convert_req_event(req, app).await?.try_into()?,
             EventKind::Notice(_) => todo!(),
         };
         Ok(ob12e::RawEvent {
@@ -394,6 +389,62 @@ impl AppData {
             time,
             event,
         })
+    }
+
+    async fn handle_get_file(&self, action: ob12a::GetFile) -> Result<ActionConverted, AllErr> {
+        use ob12a::*;
+
+        let (name, kind) = match action.r#type {
+            GetFileType::Url => match self.storage.get_url(&action.file_id).await? {
+                Some(FileInfo {
+                    name,
+                    inner: UrlUpload { url, headers },
+                }) => (
+                    name,
+                    ob12a::UploadKind::Url {
+                        headers,
+                        url,
+                        extra: Default::default(),
+                    },
+                ),
+                None => return mk_missing_file(),
+            },
+            GetFileType::Path => match self.storage.get_path(&action.file_id).await? {
+                Some(FileInfo { name, inner }) => (
+                    name,
+                    ob12a::UploadKind::Path {
+                        path: inner.to_string_lossy().into_owned(),
+                        extra: Default::default(),
+                    },
+                ),
+                None => return mk_missing_file(),
+            },
+            GetFileType::Data => match self.storage.get_data(&action.file_id).await? {
+                Some(FileInfo { name, inner }) => (
+                    name,
+                    ob12a::UploadKind::Data {
+                        data: UploadData(inner),
+                        extra: Default::default(),
+                    },
+                ),
+                None => return mk_missing_file(),
+            },
+            GetFileType::Other(typ) => {
+                return Err(AllErr::other(format!("unknown `get_file` type: {}", typ)))
+            }
+        };
+
+        let resp = GetFileResp {
+            file: FileOpt {
+                kind,
+                name,
+                sha256: None,
+            },
+            extra: Default::default(),
+        };
+        Ok(ActionConverted::Respond(RespArgs::success(
+            serde_value::to_value(resp)?,
+        )))
     }
 
     async fn convert_action<A: OBApp>(
@@ -437,62 +488,7 @@ impl AppData {
             ob12a::ActionType::GetGroupMemberInfo(action) => convert_action_default(action)?,
             ob12a::ActionType::GetGroupMemberList(action) => convert_action_default(action)?,
             ob12a::ActionType::LeaveGroup(action) => convert_action_default(action)?,
-            ob12a::ActionType::GetFile(action) => {
-                use ob12a::*;
-
-                let uuid = Uuid::from_str(&action.file_id).map_err(UploadError::Uuid)?;
-                let (name, kind) = match action.r#type {
-                    GetFileType::Url => match self.storage.get_url(&uuid).await? {
-                        Some(FileInfo {
-                            name,
-                            inner: UrlUpload { url, headers },
-                        }) => (
-                            name,
-                            ob12a::UploadKind::Url {
-                                headers: headers
-                                    .map(|headers| headers_to_hashmap(headers))
-                                    .transpose()
-                                    .map_err(AllErr::other)?,
-                                url,
-                            },
-                        ),
-                        None => return mk_missing_file(),
-                    },
-                    GetFileType::Path => match self.storage.get_path(&uuid).await? {
-                        Some(FileInfo { name, inner }) => (
-                            name,
-                            ob12a::UploadKind::Path {
-                                path: inner.to_string_lossy().into_owned(),
-                            },
-                        ),
-                        None => return mk_missing_file(),
-                    },
-                    GetFileType::Data => match self.storage.get_data(&uuid).await? {
-                        Some(FileInfo { name, inner }) => (
-                            name,
-                            ob12a::UploadKind::Data {
-                                data: UploadData(inner),
-                            },
-                        ),
-                        None => return mk_missing_file(),
-                    },
-                    GetFileType::Other(typ) => {
-                        return Err(AllErr::other(format!("unknown `get_file` type: {}", typ)))
-                    }
-                };
-
-                let resp = GetFileResp {
-                    file: FileOpt {
-                        kind,
-                        name,
-                        sha256: None,
-                    },
-                    extra: Default::default(),
-                };
-                return Ok(ActionConverted::Respond(RespArgs::success(
-                    serde_value::to_value(resp)?,
-                )));
-            }
+            ob12a::ActionType::GetFile(action) => return self.handle_get_file(action).await,
             ob12a::ActionType::GetFileFragmented(action) => {
                 let resp = self.storage.get_fragmented(action).await?;
                 return match resp {
@@ -513,6 +509,26 @@ impl AppData {
                     OCErr::not_supported(format!("unsupported action: {:?}", action)).into(),
                 )
             }
+            ob12a::ActionType::UploadFile(ob12a::UploadFile(ob12a::FileOpt {
+                kind,
+                name,
+                sha256: _,
+            })) => {
+                self.storage
+                    .upload(
+                        name,
+                        match kind {
+                            ob12a::UploadKind::Url { headers, url, .. } => {
+                                UploadKind::Url(UrlUpload { url, headers })
+                            }
+                            ob12a::UploadKind::Path { path, .. } => UploadKind::Path(path),
+                            ob12a::UploadKind::Data { data, .. } => UploadKind::Data(data),
+                            ob12a::UploadKind::Other { r#type, extra } => return,
+                        },
+                    )
+                    .await
+            }
+            ob12a::ActionType::UploadFileFragmented(_) => todo!(),
         };
 
         Ok(ActionConverted::Send(RawAction {

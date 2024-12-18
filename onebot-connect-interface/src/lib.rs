@@ -9,6 +9,8 @@ use tokio::sync::mpsc::error::SendError;
 pub mod app;
 #[cfg(feature = "imp")]
 pub mod imp;
+#[cfg(feature = "upload")]
+pub mod upload;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ClosedReason {
@@ -36,6 +38,9 @@ pub enum Error {
     Closed(String),
     #[error("missing {0}")]
     Missing(String),
+    #[cfg(feature = "upload")]
+    #[error("upload error: {0}")]
+    Upload(#[from] crate::upload::UploadError),
     #[error("{0}")]
     Other(String),
 }
