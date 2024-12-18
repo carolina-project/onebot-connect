@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::Deref, sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use ::http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use onebot_connect_interface::app::{AppExt, Connect};
@@ -63,8 +63,8 @@ impl MessageSource for HttpMessageSource {
 }
 
 pub(crate) struct HttpInner {
-    url: String,
-    http: reqwest::Client,
+    pub url: String,
+    pub http: reqwest::Client,
 }
 
 pub(crate) type HttpInnerShared = Arc<HttpInner>;
@@ -74,14 +74,6 @@ pub struct HttpApp {
     inner: HttpInnerShared,
 }
 
-impl Deref for HttpApp {
-    type Target = HttpInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 impl OBApp for HttpApp {
     async fn send_action_impl(
         &self,
@@ -89,6 +81,7 @@ impl OBApp for HttpApp {
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<serde_value::Value>, OCError> {
         let http_resp = self
+            .inner
             .http
             .post(&self.inner.url)
             .json(&RawAction {

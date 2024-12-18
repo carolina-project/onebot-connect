@@ -40,6 +40,15 @@ impl Error {
     }
 }
 
+impl From<Error> for OCError {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::OneBotConnect(e) => e,
+            other => Self::other(other),
+        }
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum RecvError {
     #[error(transparent)]

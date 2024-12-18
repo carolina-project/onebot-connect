@@ -8,36 +8,40 @@ pub mod storage;
 
 use std::{
     future::Future,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 use onebot_connect_interface::ClosedReason;
 use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, UploadFileReq};
-use parking_lot::RwLock;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use uuid::Uuid;
 
 #[derive(Debug)]
 struct ConnStateInner {
-    active: bool,
+    active: AtomicBool,
 }
 
 impl Default for ConnStateInner {
     fn default() -> Self {
-        Self { active: true }
+        Self {
+            active: AtomicBool::new(true),
+        }
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ConnState(Arc<RwLock<ConnStateInner>>);
+pub struct ConnState(Arc<ConnStateInner>);
 
 impl ConnState {
     pub fn is_active(&self) -> bool {
-        self.0.read().active
+        self.0.active.load(Ordering::Acquire)
     }
 
     pub fn set_active(&self, active: bool) {
-        self.0.write().active = active;
+        self.0.active.store(active, Ordering::Release)
     }
 }
 
