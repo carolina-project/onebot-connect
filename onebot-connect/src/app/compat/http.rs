@@ -1,8 +1,8 @@
-use std::{future::Future, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{future::Future, net::SocketAddr, sync::Arc};
 
 use super::*;
 use crate::{
-    app::{self, HttpInner, HttpInnerShared, RxMessageSource},
+    app::{HttpInner, HttpInnerShared, RxMessageSource},
     common::{http_s::HttpResponse, *},
 };
 use ::http::HeaderValue;
@@ -13,7 +13,7 @@ use http_s::{mk_resp, HttpReqProc, HttpServerTask, Req, Response};
 use hyper::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use onebot_connect_interface::{
     app::{Command, Connect, OBAppProvider, RecvMessage, RespArgs},
-    ClosedReason,
+    ClosedReason, ConfigError,
 };
 use onebot_types::{
     ob11::{action as ob11a, RawEvent as OB11Event},
@@ -24,7 +24,10 @@ use onebot_types::{
 };
 use parking_lot::RwLock;
 use sha1::Sha1;
-use tokio::sync::{mpsc::{self, UnboundedReceiver, UnboundedSender}, oneshot};
+use tokio::sync::{
+    mpsc::{self, UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
 
 #[derive(Debug)]
 pub struct OB11PostConf {
@@ -133,14 +136,22 @@ impl<A: Into<SocketAddr>> HttpConnect<A> {
         self
     }
 
-    async fn cmd_bridge(mut src: UnboundedReceiver<app::Command>, dest: UnboundedSender<HttpPostCommand>) {
+    #[allow(unused)]
+    async fn cmd_bridge(
+        mut src: UnboundedReceiver<Command>,
+        dest: UnboundedSender<HttpPostCommand>,
+    ) {
         while let Some(cmd) = src.recv().await {
             match cmd {
-                Command::Action(_, _) => todo!(),
-                Command::Respond(_, _) => todo!(),
-                Command::GetConfig(_, _) => todo!(),
-                Command::SetConfig(_, _) => todo!(),
-                Command::Close => todo!(),
+                Command::Action(_, tx) => tx
+                    .send(Err(OCErr::not_supported("http post, send action")))
+                    .unwrap(),
+                Command::Respond(_, _) => {
+                    log::error!("unexpected cmd received: respond not supported")
+                }
+                Command::GetConfig(_, tx) => tx.send(None).unwrap(),
+                Command::SetConfig((k, _), tx) => tx.send(Err(ConfigError::UnknownKey(k))).unwrap(),
+                Command::Close => dest.send(HttpPostCommand::Close).unwrap(),
             }
         }
     }
@@ -168,7 +179,7 @@ impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
             data,
             app: app_provider.provide()?,
         };
-        let (cmd_tx, msg_rx) = HttpServerTask::create(
+        let (_cmd_tx, msg_rx) = HttpServerTask::create(
             self.self_addr,
             handler,
             OB11HttpProc {
@@ -183,7 +194,8 @@ impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
                     }
                 },
             },
-        ).await;
+        )
+        .await;
 
         Ok((RxMessageSource::new(msg_rx), app_provider, ()))
     }

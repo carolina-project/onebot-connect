@@ -1,12 +1,9 @@
 use std::{
-    collections::HashMap,
     fmt::Display,
-    ops::Deref,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use http::{header::ToStrError, HeaderMap};
 use onebot_connect_interface::{app::RecvMessage as AppMsg, upload::*};
 use parking_lot::RwLock;
 use serde::{de::Error as DeErr, ser::Error as SerErr, Deserialize, Serialize};
@@ -50,16 +47,6 @@ use onebot_connect_interface::{
 
 mod convert {
     use super::*;
-
-    pub fn ob11_to_12_seg<P, M>(msg: M, param: P) -> Result<ob12m::MessageSeg, SerializerError>
-    where
-        M: IntoOB12Seg<P>,
-        <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
-    {
-        msg.into_ob12(param)?
-            .try_into()
-            .map_err(SerializerError::custom)
-    }
 
     pub async fn ob11_to_12_seg_async<P: Send, M>(
         msg: M,
@@ -150,20 +137,8 @@ struct AppDataInner {
 
 /// Connection status of OneBot 11 connection
 #[derive(Default, Clone)]
-pub(crate) struct AppData(Arc<AppDataInner>);
+pub struct AppData(Arc<AppDataInner>);
 
-impl Deref for AppData {
-    type Target = AppDataInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[inline]
-fn mk_response<R: serde::Serialize>(resp: R) -> Result<ActionConverted, AllErr> {
-    Ok(ActionConverted::Respond(RespArgs::success(resp)?))
-}
 #[inline]
 fn mk_missing_file() -> Result<ActionConverted, AllErr> {
     Ok(ActionConverted::Respond(RespArgs::failed(
@@ -172,32 +147,12 @@ fn mk_missing_file() -> Result<ActionConverted, AllErr> {
     )))
 }
 
-fn headers_to_hashmap(headers: HeaderMap) -> Result<HashMap<String, String>, ToStrError> {
-    let mut curr_header = "".to_string();
-    let mut map: HashMap<String, String> = HashMap::new();
-    for (name, value) in headers.into_iter() {
-        if let Some(name) = name {
-            curr_header = name.to_string();
-        }
-
-        match map.get_mut(&curr_header) {
-            Some(v) => {
-                v.push_str(value.to_str()?);
-            }
-            None => {
-                map.insert(curr_header.clone(), value.to_str()?.to_owned());
-            }
-        }
-    }
-
-    Ok(map)
-}
-
 impl AppData {
     async fn trace_file(&self, file: FileSeg) -> Result<String, UploadError> {
         match file.url {
             Some(url) => {
-                self.storage
+                self.0
+                    .storage
                     .upload(file.file, UploadKind::Url(UrlUpload { url, headers: None }))
                     .await
             }
@@ -206,13 +161,13 @@ impl AppData {
     }
 
     async fn find_file(&self, id: &str) -> Result<String, UploadError> {
-        match self.storage.get_store_state(&id).await? {
+        match self.0.storage.get_store_state(&id).await? {
             StoreState::NotCached(url) => Ok(url.url),
             StoreState::Cached(path) => Ok(path),
         }
     }
 
-    async fn ob12_to_ob11_seg<A: OBApp>(&self, msg: RawMessageSeg) -> Result<RawMessageSeg, OCErr> {
+    async fn ob12_to_ob11_seg(&self, msg: RawMessageSeg) -> Result<RawMessageSeg, OCErr> {
         use convert::{ob12_to_11_seg, ob12_to_11_seg_async};
         let msg: ob12m::MessageSeg = msg.try_into()?;
         let find = |name: String| async move { self.find_file(&name).await.map_err(DeErr::custom) };
@@ -274,7 +229,7 @@ impl AppData {
             MessageSeg::Reply(reply) => {
                 use onebot_connect_interface::app::AppExt;
 
-                let self_ = self.bot_state.read().self_.clone();
+                let self_ = self.0.bot_state.read().self_.clone();
                 let resp = app
                     .call_action(
                         ob11a::GetMsg {
@@ -306,7 +261,7 @@ impl AppData {
                 .await
                 .map_err(SerErr::custom)
         };
-        let id = self.bot_state.read().self_.user_id.clone();
+        let id = self.0.bot_state.read().self_.user_id.clone();
         Ok(msg
             .into_ob12((id, msg_convert))
             .await
@@ -320,16 +275,17 @@ impl AppData {
         cmd_tx: mpsc::UnboundedSender<AppMsg>,
         _app: &A,
     ) -> Result<ob12e::MetaEvent, OCErr> {
+        let inner = &self.0;
         let meta: MetaEvent = meta.try_into()?;
 
-        let (event, update) = meta.into_ob12(&self.version_info.read())?;
+        let (event, update) = meta.into_ob12(&inner.version_info.read())?;
 
         if let Some(status) = update {
             let good = status.good;
             let state =
-                ob12::BotState::from_ob11(status, self.bot_state.read().self_.user_id.clone())?;
+                ob12::BotState::from_ob11(status, self.0.bot_state.read().self_.user_id.clone())?;
 
-            if state != *self.bot_state.read() {
+            if state != *inner.bot_state.read() {
                 // if latest bot state is different
                 let update = ob12e::meta::StatusUpdate {
                     status: ob12::Status {
@@ -356,7 +312,7 @@ impl AppData {
         _app: &A,
     ) -> Result<ob12e::RequestEvent, OCErr> {
         let req: RequestEvent = req.try_into()?;
-        Ok(req.into_ob12(self.bot_state.read().self_.user_id.clone())?)
+        Ok(req.into_ob12(self.0.bot_state.read().self_.user_id.clone())?)
     }
 
     async fn convert_notice_event<A: OBApp + 'static>(
@@ -366,7 +322,7 @@ impl AppData {
     ) -> Result<ob12e::Event, OCErr> {
         let notice: NoticeEvent = notice.try_into()?;
 
-        let self_ = self.bot_state.read().self_.user_id.clone();
+        let self_ = self.0.bot_state.read().self_.user_id.clone();
         Ok(notice
             .into_ob12((self_, |_| async move { Uuid::new_v4().to_string() }))
             .await?)
@@ -405,8 +361,9 @@ impl AppData {
     async fn handle_get_file(&self, action: ob12a::GetFile) -> Result<ActionConverted, AllErr> {
         use ob12a::*;
 
+        let inner = &self.0;
         let (name, kind) = match action.r#type {
-            GetFileType::Url => match self.storage.get_url(&action.file_id).await? {
+            GetFileType::Url => match inner.storage.get_url(&action.file_id).await? {
                 Some(FileInfo {
                     name,
                     inner: UrlUpload { url, headers },
@@ -420,7 +377,7 @@ impl AppData {
                 ),
                 None => return mk_missing_file(),
             },
-            GetFileType::Path => match self.storage.get_path(&action.file_id).await? {
+            GetFileType::Path => match inner.storage.get_path(&action.file_id).await? {
                 Some(FileInfo { name, inner }) => (
                     name,
                     ob12a::UploadKind::Path {
@@ -430,7 +387,7 @@ impl AppData {
                 ),
                 None => return mk_missing_file(),
             },
-            GetFileType::Data => match self.storage.get_data(&action.file_id).await? {
+            GetFileType::Data => match inner.storage.get_data(&action.file_id).await? {
                 Some(FileInfo { name, inner }) => (
                     name,
                     ob12a::UploadKind::Data {
@@ -463,6 +420,7 @@ impl AppData {
             sha256: _,
         }) = action;
         let file_id = self
+            .0
             .storage
             .upload(
                 name,
@@ -491,25 +449,32 @@ impl AppData {
     pub async fn convert_action<A: OBApp + 'static>(
         &self,
         action: ob12a::ActionDetail,
-        app: &A,
+        _app: &A,
     ) -> Result<ActionConverted, AllErr> {
         use convert::*;
 
+        #[inline]
+        fn mk_response<R: serde::Serialize>(resp: R) -> Result<ActionConverted, AllErr> {
+            Ok(ActionConverted::Respond(RespArgs::success(resp)?))
+        }
+
         let detail: ob12a::ActionType = action.try_into().map_err(OCErr::deserialize)?;
+        let inner = &self.0;
         let detail = match detail {
             ob12a::ActionType::SendMessage(action) => {
-                convert_action_async(action, |msg| async move {
-                    self.ob11_to_ob12_seg(msg, app).await
-                })
+                convert_action_async(
+                    action,
+                    |msg| async move { self.ob12_to_ob11_seg(msg).await },
+                )
                 .await?
             }
             ob12a::ActionType::GetStatus(_) => {
-                let state = self.bot_state.read();
-                return Ok(ActionConverted::Respond(RespArgs::success(ob12::Status {
-                    good: self.conn_state.is_active(),
+                let state = inner.bot_state.read();
+                return mk_response(ob12::Status {
+                    good: inner.conn_state.is_active(),
                     bots: vec![state.clone()],
                     extra: Default::default(),
-                })?));
+                });
             }
             ob12a::ActionType::DeleteMessage(action) => convert_action_default(action)?,
             ob12a::ActionType::SetGroupName(action) => convert_action_default(action)?,
@@ -517,11 +482,7 @@ impl AppData {
                 // please get events using ob11 http post
                 return Err(OCErr::not_supported("please poll events with HTTP POST").into());
             }
-            ob12a::ActionType::GetSupportedActions(_) => {
-                return Ok(ActionConverted::Respond(RespArgs::success(
-                    SUPPORTED_ACTIONS,
-                )?))
-            }
+            ob12a::ActionType::GetSupportedActions(_) => return mk_response(SUPPORTED_ACTIONS),
             ob12a::ActionType::GetVersion(action) => convert_action_default(action)?,
             ob12a::ActionType::GetSelfInfo(action) => convert_action_default(action)?,
             ob12a::ActionType::GetUserInfo(action) => convert_action_default(action)?,
@@ -533,9 +494,9 @@ impl AppData {
             ob12a::ActionType::LeaveGroup(action) => convert_action_default(action)?,
             ob12a::ActionType::GetFile(action) => return self.handle_get_file(action).await,
             ob12a::ActionType::GetFileFragmented(action) => {
-                let resp = self.storage.get_fragmented(action).await?;
+                let resp = inner.storage.get_fragmented(action).await?;
                 return match resp {
-                    Some(resp) => Ok(ActionConverted::Respond(RespArgs::success(resp)?)),
+                    Some(resp) => mk_response(resp),
                     None => mk_missing_file(),
                 };
             }
@@ -548,12 +509,10 @@ impl AppData {
             ob12a::ActionType::UploadFile(action) => return self.handle_upload(action).await,
             ob12a::ActionType::UploadFileFragmented(ob12a::UploadFileFragmented(req)) => {
                 use ob12a::*;
-                return Ok(ActionConverted::Respond(RespArgs::success(
-                    UploadFragmented {
-                        file_id: self.storage.upload_fragmented(req).await?,
-                        extra: Default::default(),
-                    },
-                )?));
+                return mk_response(UploadFragmented {
+                    file_id: inner.storage.upload_fragmented(req).await?,
+                    extra: Default::default(),
+                });
             }
             action => {
                 return Err(

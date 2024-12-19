@@ -101,7 +101,7 @@ impl OBApp for TxAppSide {
         self.tx
             .send(Command::Action(ActionArgs { action, self_ }, tx))
             .map_err(OCError::closed)?;
-        rx.await.unwrap().map(|r| Some(r))
+        rx.await.map_err(OCError::closed)?.map(|r| Some(r))
     }
 
     async fn get_config<'a, 'b: 'a>(
@@ -123,7 +123,7 @@ impl OBApp for TxAppSide {
     ) -> Result<(), OCError> {
         let (tx, rx) = oneshot::channel();
         let entry = (key.into(), value);
-        self.tx.send(Command::SetConfig(entry, tx)).unwrap();
+        self.tx.send(Command::SetConfig(entry, tx))?;
         Ok(rx.await.map_err(OCError::closed)??)
     }
 
