@@ -109,6 +109,10 @@ impl OBApp for HttpApp {
         }
     }
 
+    async fn close(&self) -> Result<(), OCError> {
+        Ok(())
+    }
+
     fn clone_app(&self) -> Self {
         self.clone()
     }

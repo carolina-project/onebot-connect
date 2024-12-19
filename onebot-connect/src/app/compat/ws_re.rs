@@ -3,7 +3,10 @@ use std::net::SocketAddr;
 use onebot_connect_interface::app::Connect;
 use tokio::net::ToSocketAddrs;
 
-use crate::app::{ws_re::wait_for_ws, RxMessageSource, TxAppProvider};
+use crate::{
+    app::{RxMessageSource, TxAppProvider},
+    common::ws::wait_for_ws,
+};
 
 use super::ws::connect_ws;
 

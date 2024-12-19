@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ::http::{HeaderMap, HeaderValue, header::*};
+use ::http::{header::*, HeaderMap, HeaderValue};
 
 use super::*;
 
@@ -108,6 +108,10 @@ impl OBImpl for WebhookImpl {
                 .send(RecvMessage::Action(ele))
                 .map_err(OCError::closed)?;
         }
+        Ok(())
+    }
+
+    async fn close(&self) -> Result<(), OCError> {
         Ok(())
     }
 

@@ -135,6 +135,10 @@ mod recv {
         fn provide(&mut self) -> Result<Self::Output, Error>;
     }
 
+    pub trait ProviderWithEvent: OBAppProvider {
+        fn set_context(&mut self, event: &RawEvent);
+    }
+
     /// Trait to define the connection behavior
     pub trait Connect {
         /// Connection error type
@@ -174,6 +178,9 @@ pub trait OBApp: Send + Sync {
         action: ActionDetail,
         self_: Option<BotSelf>,
     ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
+
+    /// Close connection.
+    fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     /// Get config from connection.
     #[allow(unused)]

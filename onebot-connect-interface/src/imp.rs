@@ -77,6 +77,9 @@ pub trait OBImpl {
         echo: ActionEcho,
         data: ActionResponse,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
+
+    /// Close connection.
+    fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
 /// Trait for providing event transmitters.

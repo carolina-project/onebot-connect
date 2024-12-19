@@ -30,6 +30,10 @@ impl OBImpl for TxImpl {
         self.tx.send(Command::Event(event)).map_err(OCError::closed)
     }
 
+    async fn close(&self) -> Result<(), OCError> {
+        Ok(self.tx.send(Command::Close)?)
+    }
+
     async fn respond(&self, echo: ActionEcho, data: ActionResponse) -> Result<(), OCError> {
         self.tx
             .send(Command::Respond(echo, data))

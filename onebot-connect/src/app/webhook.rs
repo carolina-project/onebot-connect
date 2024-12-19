@@ -5,7 +5,10 @@ use crate::{
     Error as AllErr,
 };
 
-use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
+use onebot_connect_interface::{
+    app::{Connect, ProviderWithEvent},
+    ClosedReason, ConfigError,
+};
 use onebot_types::ob12::{
     action::{ActionDetail, RawAction},
     event::RawEvent,
@@ -172,6 +175,10 @@ impl OBApp for WebhookApp {
         }
     }
 
+    async fn close(&self) -> Result<(), OCError> {
+        Ok(self.inner.cmd_tx.send(Command::Close)?)
+    }
+
     async fn release(&mut self) -> Result<(), OCError> {
         if self.is_owner {
             let actions = std::mem::take(&mut *self.inner.actions.lock());
@@ -198,10 +205,6 @@ impl WebhookAppProvider {
             cmd_tx,
         }
     }
-
-    pub fn set_event(&mut self, id: String) {
-        self.event_id = Some(id);
-    }
 }
 impl OBAppProvider for WebhookAppProvider {
     type Output = WebhookApp;
@@ -212,5 +215,11 @@ impl OBAppProvider for WebhookAppProvider {
         } else {
             Err(OCError::not_supported("send action actively not supported"))
         }
+    }
+}
+
+impl ProviderWithEvent for WebhookAppProvider {
+    fn set_context(&mut self, event: &RawEvent) {
+        self.event_id = Some(event.id.to_owned())
     }
 }

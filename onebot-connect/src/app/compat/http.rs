@@ -290,6 +290,10 @@ impl OBApp for OB11HttpApp {
         }
     }
 
+    async fn close(&self) -> Result<(), OCErr> {
+        Ok(())
+    }
+
     fn clone_app(&self) -> Self
     where
         Self: 'static,

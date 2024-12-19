@@ -125,6 +125,10 @@ impl OBApp for TxAppSide {
         Ok(rx.await.map_err(OCError::closed)??)
     }
 
+    async fn close(&self) -> Result<(), OCError> {
+        Ok(self.tx.send(Command::Close)?)
+    }
+
     fn clone_app(&self) -> Self {
         self.clone()
     }

@@ -235,6 +235,10 @@ impl OBImpl for HttpImpl {
             .send(Command::Respond(echo, data))
             .map_err(OCError::closed)
     }
+
+    async fn close(&self) -> Result<(), OCError> {
+        Ok(self.inner.cmd_tx.send(Command::Close)?)
+    }
 }
 
 pub struct HttpImplProvider {

@@ -1,13 +1,13 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, net::SocketAddr};
 
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
+use http::{header::AUTHORIZATION, StatusCode};
 use serde::de::DeserializeOwned;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::{mpsc, oneshot},
+    io::{AsyncRead, AsyncWrite}, net::{TcpListener, TcpStream, ToSocketAddrs}, sync::{mpsc, oneshot}
 };
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::WebSocketStream;
@@ -16,6 +16,45 @@ use crate::Error as AllErr;
 use onebot_connect_interface::{ClosedReason, Error as OCErr};
 
 use super::*;
+
+pub(crate) async fn wait_for_ws(
+    addr: impl ToSocketAddrs,
+    access_token: Option<&str>,
+) -> Result<(WebSocketStream<TcpStream>, SocketAddr), crate::Error> {
+    let listener = TcpListener::bind(addr).await?;
+
+    let (stream, addr) = listener.accept().await?;
+    Ok((
+        tokio_tungstenite::accept_hdr_async(
+            stream,
+            |req: &http::Request<()>, response: http::Response<()>| {
+                let Some(token) = access_token else {
+                    return Ok(response);
+                };
+
+                if req
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .map(|r| {
+                        r.to_str()
+                            .map(|h_token| h_token == format!("Bearer {token}"))
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default()
+                {
+                    Ok(response)
+                } else {
+                    Err(http::Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Some("Invalid access token".into()))
+                        .unwrap())
+                }
+            },
+        )
+        .await?,
+        addr,
+    ))
+}
 
 pub(crate) trait WSTaskHandler<Cmd, Body, Msg>:
     CmdHandler<(Cmd, mpsc::UnboundedSender<tungstenite::Message>)>

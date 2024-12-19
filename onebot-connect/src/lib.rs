@@ -11,6 +11,7 @@ pub mod app;
 pub mod imp;
 
 pub mod common;
+pub mod wrap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
