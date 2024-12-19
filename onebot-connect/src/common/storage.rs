@@ -10,8 +10,9 @@ use dashmap::mapref::one::{Ref as MapRef, RefMut as MapRefMut};
 use dashmap::DashMap;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use onebot_connect_interface::upload::*;
-use onebot_types::ob12::action::{GetFileReq, UploadData};
+use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, GetFileReq, UploadData, UploadFileReq};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use uuid::Uuid;
 
 use super::*;
 
@@ -19,8 +20,6 @@ use super::*;
 pub enum FsError {
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("url error: {0}")]
-    ParseUrl(url::ParseError),
     #[error("{0}")]
     Other(String),
 }

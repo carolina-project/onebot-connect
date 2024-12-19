@@ -17,7 +17,6 @@ uuid =  { version = "1", features = ["fast-rng", "v4"], optional = true }
 parking_lot = "0.12"
 dashmap = "6"
 bytes =  { version = "1" }
-url = "*"
 http = { version = "1" }
 hex = "*"
 
@@ -51,8 +50,7 @@ app = ["onebot-connect-interface/app"]
 imp = ["onebot-connect-interface/imp"]
 compat = ["onebot-types/compat", "dep:uuid", "storage", "crypto"]
 
-storage = ["http", "tokio/fs"]
-upload = ["onebot-connect-interface/upload"]
+storage = ["http", "tokio/fs", "onebot-connect-interface/upload", "dep:uuid"]
 crypto = ["dep:hmac", "dep:sha1"]
 
 ws = ["tokio-tungstenite"]

@@ -15,7 +15,6 @@ use onebot_types::ob12::event::RawEvent;
 use tokio::sync::mpsc;
 
 type CmdSender = mpsc::UnboundedSender<Command>;
-type MessageTx = mpsc::UnboundedSender<RecvMessage>;
 type MessageRecv = mpsc::UnboundedReceiver<RecvMessage>;
 
 pub struct TxImpl {

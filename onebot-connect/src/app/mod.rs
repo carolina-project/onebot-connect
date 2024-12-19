@@ -1,7 +1,7 @@
 use fxhash::FxHashMap;
 use onebot_connect_interface::{
     app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
-    ActionResult, Error as OCError,
+    Error as OCError,
 };
 use onebot_types::ob12::action::ActionDetail;
 use rand::Rng;
@@ -29,8 +29,6 @@ pub use {ws::WSConnect, ws_re::WSReConnect};
 
 pub(crate) static ACTION_ECHO_CHARSET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-pub(crate) type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
 
 pub fn generate_echo<V>(len: usize, map: &FxHashMap<String, V>) -> String {
     let mut rng = rand::thread_rng();

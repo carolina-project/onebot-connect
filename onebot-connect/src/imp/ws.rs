@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use hyper::{header::AUTHORIZATION, StatusCode};
+use ::http::{StatusCode, header::*};
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_tungstenite::WebSocketStream;
 use ws_re::WSHandler;

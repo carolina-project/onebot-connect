@@ -1,3 +1,5 @@
+use onebot_connect_interface::app::OBApp;
+use onebot_connect_interface::Error as OCErr;
 use std::{future::Future, net::SocketAddr, sync::Arc};
 
 use super::*;
@@ -352,18 +354,16 @@ pub struct HttpPostHandler {
     app: OB11HttpApp,
 }
 
-impl RecvHandler<(RawEvent, HttpPostResponder), RecvMessage> for HttpPostHandler {
+impl RecvHandler<(OB11Event, HttpPostResponder), RecvMessage> for HttpPostHandler {
     async fn handle_recv(
         &mut self,
-        recv: (RawEvent, HttpPostResponder),
+        recv: (OB11Event, HttpPostResponder),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: ConnState,
     ) -> Result<(), crate::Error> {
         let (event, respond) = recv;
         msg_tx.send(RecvMessage::Event(
-            self.data
-                .convert_event(event, &msg_tx, &self.app)
-                .await?,
+            self.data.convert_event(event, &msg_tx, &self.app).await?,
         ))?;
         // ignore quick action
         respond

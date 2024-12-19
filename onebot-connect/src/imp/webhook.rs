@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use ::http::HeaderValue;
-use hyper::{
-    header::{AUTHORIZATION, USER_AGENT},
-    HeaderMap,
-};
+use ::http::{HeaderMap, HeaderValue, header::*};
 
 use super::*;
+
+type MessageTx = mpsc::UnboundedSender<RecvMessage>;
 
 pub struct WebhookCreate {
     url: String,

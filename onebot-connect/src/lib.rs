@@ -1,6 +1,6 @@
 use std::{fmt::Display, io};
 
-use onebot_connect_interface::{upload::UploadError, Error as OCError};
+use onebot_connect_interface::Error as OCError;
 use onebot_types::ob12::action::RespError;
 use serde_value::{DeserializerError, SerializerError};
 use tokio::sync::mpsc;
@@ -70,8 +70,9 @@ impl From<RespError> for Error {
     }
 }
 
-impl From<UploadError> for Error {
-    fn from(value: UploadError) -> Self {
+#[cfg(feature = "storage")]
+impl From<onebot_connect_interface::upload::UploadError> for Error {
+    fn from(value: onebot_connect_interface::upload::UploadError) -> Self {
         Self::OneBotConnect(value.into())
     }
 }

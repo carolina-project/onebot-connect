@@ -1,8 +1,7 @@
-use ::http::HeaderValue;
-use hyper::header::AUTHORIZATION;
+use ::http::{header::*, HeaderValue};
 use onebot_connect_interface::{
     app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
-    ClosedReason, ConfigError, Error as OCError,
+    ActionResult, ClosedReason, ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{
     action::{RawAction, RespData},
@@ -26,6 +25,8 @@ use crate::{
 
 use super::*;
 use crate::Error as AllErr;
+
+type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
 
 #[derive(Debug, Default)]
 pub struct WSHandler {

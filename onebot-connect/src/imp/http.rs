@@ -18,8 +18,6 @@ extern crate http as http_lib;
 use super::*;
 use crate::Error as AllErr;
 
-type EventQueue = Mutex<VecDeque<RawEvent>>;
-
 type ActionResponder = oneshot::Sender<HttpResponse<RespData>>;
 type RespMap = FxHashMap<ActionEcho, ActionResponder>;
 type ActionRecv = (RawAction, ActionResponder);

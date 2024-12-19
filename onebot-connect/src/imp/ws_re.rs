@@ -1,5 +1,4 @@
-use ::http::HeaderValue;
-use hyper::header::AUTHORIZATION;
+use ::http::{header::*, HeaderValue};
 use onebot_connect_interface::{ClosedReason, ConfigError};
 use onebot_types::ob12::action::{RespData, RespStatus, RetCode};
 use tokio_tungstenite::{

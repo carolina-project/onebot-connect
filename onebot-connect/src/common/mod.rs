@@ -1,6 +1,8 @@
 #[cfg(feature = "hyper")]
+#[allow(unused)]
 pub mod http_s;
 #[cfg(feature = "ws")]
+#[allow(unused)]
 pub mod ws;
 
 #[cfg(feature = "storage")]
@@ -15,9 +17,7 @@ use std::{
 };
 
 use onebot_connect_interface::ClosedReason;
-use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, UploadFileReq};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
-use uuid::Uuid;
 
 #[derive(Debug)]
 struct ConnStateInner {
@@ -45,6 +45,7 @@ impl ConnState {
     }
 }
 
+#[allow(unused)]
 pub(self) enum Signal {
     Close(oneshot::Sender<Result<(), String>>),
 }
