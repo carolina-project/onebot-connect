@@ -362,7 +362,7 @@ impl RecvHandler<(RawEvent, HttpPostResponder), RecvMessage> for HttpPostHandler
         let (event, respond) = recv;
         msg_tx.send(RecvMessage::Event(
             self.data
-                .convert_event(event, msg_tx.clone(), &self.app)
+                .convert_event(event, &msg_tx, &self.app)
                 .await?,
         ))?;
         // ignore quick action

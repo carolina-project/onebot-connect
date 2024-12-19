@@ -18,7 +18,7 @@ mod recv {
     use std::fmt::Debug;
 
     use onebot_types::ob12::{
-        action::{ActionDetail, RespStatus, RetCode},
+        action::{ActionDetail, RespError, RespStatus, RetCode},
         event::RawEvent,
     };
     use tokio::sync::oneshot;
@@ -73,6 +73,24 @@ mod recv {
                 data: serde_value::to_value(data)?,
                 message: Default::default(),
             })
+        }
+
+        pub fn into_result(self, echo: Option<String>) -> Result<Value, RespError> {
+            let RespArgs {
+                status,
+                retcode,
+                data,
+                message,
+            } = self;
+            if status == RespStatus::Failed {
+                Err(RespError {
+                    retcode,
+                    message,
+                    echo,
+                })
+            } else {
+                Ok(data)
+            }
         }
     }
 

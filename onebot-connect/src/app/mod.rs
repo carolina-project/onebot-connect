@@ -32,7 +32,7 @@ pub(crate) static ACTION_ECHO_CHARSET: &str =
 
 pub(crate) type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
 
-pub fn generate_echo(len: usize, map: &ActionMap) -> String {
+pub fn generate_echo<V>(len: usize, map: &FxHashMap<String, V>) -> String {
     let mut rng = rand::thread_rng();
 
     loop {

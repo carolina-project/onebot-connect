@@ -1,6 +1,7 @@
 use std::{fmt::Display, io};
 
 use onebot_connect_interface::{upload::UploadError, Error as OCError};
+use onebot_types::ob12::action::RespError;
 use serde_value::{DeserializerError, SerializerError};
 use tokio::sync::mpsc;
 
@@ -60,6 +61,12 @@ pub enum RecvError {
 impl From<DeserializerError> for Error {
     fn from(e: DeserializerError) -> Self {
         Self::OneBotConnect(OCError::deserialize(e))
+    }
+}
+
+impl From<RespError> for Error {
+    fn from(err: RespError) -> Self {
+        Self::OneBotConnect(err.into())
     }
 }
 

@@ -272,7 +272,7 @@ impl AppData {
         &self,
         time: f64,
         meta: MetaDetail,
-        cmd_tx: mpsc::UnboundedSender<AppMsg>,
+        cmd_tx: &mpsc::UnboundedSender<AppMsg>,
         _app: &A,
     ) -> Result<ob12e::MetaEvent, OCErr> {
         let inner = &self.0;
@@ -331,7 +331,7 @@ impl AppData {
     pub async fn convert_event<A: OBApp + 'static>(
         &self,
         raw_event: RawEvent,
-        cmd_tx: mpsc::UnboundedSender<AppMsg>,
+        cmd_tx: &mpsc::UnboundedSender<AppMsg>,
         app: &A,
     ) -> Result<ob12e::RawEvent, OCErr> {
         let event_k: EventKind = raw_event.detail.try_into()?;

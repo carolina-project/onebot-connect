@@ -52,6 +52,17 @@ where
     M: Send + 'static,
     C: Send + 'static,
 {
+    pub async fn create_with_channel<S>(
+        ws: WebSocketStream<S>,
+        cmd_rx: mpsc::UnboundedReceiver<C>,
+        msg_tx: mpsc::UnboundedSender<M>,
+        handler: HL,
+    ) where
+        S: WsStream,
+    {
+        tokio::spawn(Self::manage_task(ws, cmd_rx, msg_tx, handler));
+    }
+
     pub async fn create<S>(
         ws: WebSocketStream<S>,
         handler: HL,
@@ -61,7 +72,7 @@ where
     {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::manage_task(ws, cmd_rx, msg_tx, handler));
+        Self::create_with_channel(ws, cmd_rx, msg_tx, handler).await;
 
         (cmd_tx, msg_rx)
     }
