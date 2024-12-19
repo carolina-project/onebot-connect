@@ -15,15 +15,13 @@ use std::{net::SocketAddr, sync::Arc};
 
 type EventResponder = oneshot::Sender<HttpResponse<Vec<RawAction>>>;
 
-/// Authorization header and `access_token` query param, choose one to use
-
 type ActionsMap = FxHashMap<String, EventResponder>;
 #[derive(Default)]
 struct WHandler {
     actions_map: ActionsMap,
 }
 
-impl CmdHandler<Command, RecvMessage> for WHandler {
+impl CmdHandler<Command> for WHandler {
     async fn handle_cmd(
         &mut self,
         cmd: Command,
@@ -105,16 +103,17 @@ impl WebhookConnect {
 }
 impl Connect for WebhookConnect {
     type Error = crate::Error;
-
     type Message = ();
-
     type Provider = WebhookAppProvider;
-
     type Source = RxMessageSource;
 
     async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        let (cmd_tx, msg_rx) =
-            HttpServerTask::create(self.addr, self.config, WHandler::default(), parse_req).await;
+        let (cmd_tx, msg_rx) = HttpServerTask::create(
+            self.addr,
+            WHandler::default(),
+            OB12HttpProc::new(self.config, parse_req),
+        )
+        .await;
 
         Ok((
             RxMessageSource::new(msg_rx),

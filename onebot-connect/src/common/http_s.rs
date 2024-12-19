@@ -32,23 +32,6 @@ pub(crate) fn mk_resp(status: hyper::StatusCode, data: Option<impl Into<Bytes>>)
         .unwrap()
 }
 
-pub(crate) async fn parse_req<B>(req: Req) -> Result<B, Response>
-where
-    B: DeserializeOwned + Send + 'static,
-{
-    let bytes = req.into_body().collect().await.map_err(|e| {
-        log::debug!("error while collecting data: {}", e);
-        mk_resp(StatusCode::BAD_REQUEST, None::<String>)
-    })?;
-    match serde_json::from_slice::<B>(&bytes.to_bytes()) {
-        Ok(action) => Ok(action),
-        Err(e) => {
-            log::debug!("error while deserializing data: {}", e);
-            Err(mk_resp(StatusCode::BAD_REQUEST, None::<String>))
-        }
-    }
-}
-
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct ReqQuery<'a> {
     pub access_token: &'a str,
@@ -71,6 +54,7 @@ where
     Other { status: StatusCode },
 }
 
+/// Handle http request and make an connection message sending to `RecvHandler`.
 pub(crate) trait HttpReqProc: Clone + Send + Sync + 'static {
     type Output;
 
@@ -96,58 +80,51 @@ where
     }
 }
 
-struct HttpServer<Body, Resp, Proc>
+pub(crate) async fn parse_req<B>(req: Req) -> Result<B, Response>
 where
-    Body: Send + 'static,
-    Resp: Serialize + Send + 'static,
-    Proc: HttpReqProc<Output = Body>,
+    B: DeserializeOwned + Send,
+{
+    let bytes = req.into_body().collect().await.map_err(|e| {
+        log::debug!("error while collecting data: {}", e);
+        mk_resp(StatusCode::BAD_REQUEST, None::<String>)
+    })?;
+    match serde_json::from_slice::<B>(&bytes.to_bytes()) {
+        Ok(action) => Ok(action),
+        Err(e) => {
+            log::debug!("error while deserializing data: {}", e);
+            Err(mk_resp(StatusCode::BAD_REQUEST, None::<String>))
+        }
+    }
+}
+
+/// Handling OneBot 12 Webhook/Http server request，check authorization and process requests.
+#[derive(Clone)]
+pub(crate) struct OB12HttpProc<P>
+where
+    P: HttpReqProc,
 {
     config: HttpConfShared,
-    body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
-    proc: Proc,
+    proc: P,
 }
 
-impl<B, R, P> Clone for HttpServer<B, R, P>
-where
-    B: Send + 'static,
-    R: Serialize + Send + 'static,
-    P: HttpReqProc<Output = B> + Send + 'static,
-{
-    fn clone(&self) -> Self {
+impl<P: HttpReqProc> OB12HttpProc<P> {
+    pub fn new(conf: HttpConfig, proc: P) -> Self {
         Self {
-            config: self.config.clone(),
-            body_tx: self.body_tx.clone(),
-            proc: self.proc.clone(),
+            config: Arc::new(RwLock::new(conf)),
+            proc,
         }
     }
 }
 
-impl<B, R, P> HttpServer<B, R, P>
+impl<R, P> HttpReqProc for OB12HttpProc<P>
 where
-    B: Send + 'static,
-    R: Serialize + Send + 'static,
-    P: HttpReqProc<Output = B> + Send + 'static,
+    P: HttpReqProc<Output = R>,
+    R: Send + Sync + 'static,
 {
-    pub fn new(
-        body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
-        config: HttpConfig,
-        proc: P,
-    ) -> Self {
-        Self {
-            config: Arc::new(RwLock::new(config)),
-            body_tx,
-            proc,
-        }
-    }
+    type Output = R;
 
-    async fn handle_req(self, req: Req) -> Result<Response, Response> {
-        let Self {
-            config,
-            body_tx,
-            proc,
-        } = self;
-        // check access token
-        if let Some((header_token, query_token)) = &config.read().authorization {
+    async fn process_request(&self, req: Req) -> Result<Self::Output, Response> {
+        if let Some((header_token, query_token)) = &self.config.read().authorization {
             if let Some(header) = req.headers().get(AUTHORIZATION) {
                 if header != header_token {
                     return Err(mk_resp(StatusCode::FORBIDDEN, None::<Vec<u8>>));
@@ -179,8 +156,48 @@ where
             != "application/json"
         {
             return Err(mk_resp(StatusCode::NOT_ACCEPTABLE, None::<String>));
+        } else {
+            self.proc.process_request(req).await
         }
+    }
+}
 
+struct HttpServer<Body, Resp, Proc>
+where
+    Body: Send + 'static,
+    Resp: Serialize + Send + 'static,
+    Proc: HttpReqProc<Output = Body>,
+{
+    body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
+    proc: Proc,
+}
+
+impl<B, R, P> Clone for HttpServer<B, R, P>
+where
+    B: Send + 'static,
+    R: Serialize + Send + 'static,
+    P: HttpReqProc<Output = B> + Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            body_tx: self.body_tx.clone(),
+            proc: self.proc.clone(),
+        }
+    }
+}
+
+impl<B, R, P> HttpServer<B, R, P>
+where
+    B: Send + 'static,
+    R: Serialize + Send + 'static,
+    P: HttpReqProc<Output = B> + Send + 'static,
+{
+    pub fn new(body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>, proc: P) -> Self {
+        Self { body_tx, proc }
+    }
+
+    async fn handle_req(self, req: Req) -> Result<Response, Response> {
+        let Self { body_tx, proc } = self;
         let body: B = proc.process_request(req).await?;
 
         let (tx, rx) = oneshot::channel();
@@ -202,7 +219,7 @@ where
 }
 
 pub(crate) trait HttpTaskHandler<Body, Resp, Cmd, Msg>:
-    CmdHandler<Cmd, Msg>
+    CmdHandler<Cmd>
     + RecvHandler<(Body, oneshot::Sender<HttpResponse<Resp>>), Msg>
     + CloseHandler<Msg>
     + Send
@@ -213,7 +230,7 @@ where
 }
 impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T
 where
-    T: CmdHandler<C, M> + RecvHandler<HttpResponder<B, R>, M> + CloseHandler<M> + Send + 'static,
+    T: CmdHandler<C> + RecvHandler<HttpResponder<B, R>, M> + CloseHandler<M> + Send + 'static,
     R: Send + Serialize + 'static,
 {
 }
@@ -233,32 +250,25 @@ where
     _phantom: PhantomData<(Handler, Body, Resp, Msg, Cmd)>,
 }
 
-impl<B, R, C, M, H> HttpServerTask<B, R, C, M, H>
+impl<Body, Resp, Cmd, Msg, Handler> HttpServerTask<Body, Resp, Cmd, Msg, Handler>
 where
-    H: HttpTaskHandler<B, R, C, M>,
-    B: Send + 'static,
-    R: Serialize + Send + 'static,
-    M: Send + 'static,
-    C: Send + 'static,
+    Handler: HttpTaskHandler<Body, Resp, Cmd, Msg>,
+    Body: Send + 'static,
+    Resp: Serialize + Send + 'static,
+    Msg: Send + 'static,
+    Cmd: Send + 'static,
 {
-    pub async fn create<Proc: HttpReqProc<Output = B>>(
+    pub async fn create<Proc: HttpReqProc<Output = Body>>(
         addr: impl Into<SocketAddr>,
-        config: HttpConfig,
-        handler: H,
+        handler: Handler,
         req_proc: Proc,
-    ) -> (mpsc::UnboundedSender<C>, mpsc::UnboundedReceiver<M>) {
+    ) -> (mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>) {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(Self::server_task(
-            addr.into(),
-            body_tx,
-            signal_rx,
-            config.clone(),
-            req_proc,
-        ));
+        tokio::spawn(Self::server_task(addr.into(), body_tx, signal_rx, req_proc));
         tokio::spawn(Self::manage_task(
             body_rx, msg_tx, cmd_rx, signal_tx, handler,
         ));
@@ -268,16 +278,15 @@ where
 
     async fn server_task<Proc>(
         addr: SocketAddr,
-        body_tx: mpsc::UnboundedSender<HttpResponder<B, R>>,
+        body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
         mut signal_rx: mpsc::UnboundedReceiver<Signal>,
-        config: HttpConfig,
         req_proc: Proc,
     ) -> Result<(), AllErr>
     where
-        Proc: HttpReqProc<Output = B> + Send + 'static,
+        Proc: HttpReqProc<Output = Body> + Send + 'static,
     {
         let listener = TcpListener::bind(addr).await?;
-        let serv = HttpServer::new(body_tx, config, req_proc);
+        let serv = HttpServer::new(body_tx, req_proc);
 
         async fn handle_http<
             Body: Send + 'static,
@@ -294,7 +303,7 @@ where
                         io,
                         service_fn(|r| async {
                             Ok::<Response, Infallible>(
-                                serv.clone().handle_req(r).await.unwrap_or_else(|e| e),
+                                serv.clone().handle_req(r).await.unwrap_err(),
                             )
                         }),
                     )
@@ -332,11 +341,11 @@ where
     }
 
     async fn manage_task(
-        mut body_rx: mpsc::UnboundedReceiver<HttpResponder<B, R>>,
-        msg_tx: mpsc::UnboundedSender<M>,
-        mut cmd_rx: mpsc::UnboundedReceiver<C>,
+        mut body_rx: mpsc::UnboundedReceiver<HttpResponder<Body, Resp>>,
+        msg_tx: mpsc::UnboundedSender<Msg>,
+        mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
         signal_tx: mpsc::UnboundedSender<Signal>,
-        mut handler: H,
+        mut handler: Handler,
     ) -> Result<ClosedReason, AllErr> {
         let state = ConnState::default();
 

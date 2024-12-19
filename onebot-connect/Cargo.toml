@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 # OneBot lib
 onebot-connect-interface = { path = "../onebot-connect-interface", features = ["app_recv"]}
-onebot-types = { path = "../../onebot-types" }
+onebot-types = { path = "../../onebot-types", features = ["base64"]}
 
 # Basic utilities
 log = "0.4"
@@ -19,6 +19,7 @@ dashmap = "6"
 bytes =  { version = "1" }
 url = "*"
 http = { version = "1" }
+hex = "*"
 
 # Ser and deser
 serde = { version = "1" }
@@ -40,13 +41,21 @@ hyper-util = { version = "0.1", optional = true, features = ["tokio"]}
 http-body-util = { version = "0.1", optional = true}
 http-body = { version = "1", optional = true }
 
+# Crypto
+hmac = { version = "0.12", optional = true}
+sha1 = { version = "0.10", optional = true}
+
 [features]
 default = []
 app = ["onebot-connect-interface/app"]
 imp = ["onebot-connect-interface/imp"]
-upload = ["onebot-connect-interface/upload"]
-hyper = ["dep:hyper", "dep:http-body-util", "dep:hyper-util"]
+compat = ["onebot-types/compat", "dep:uuid", "storage", "crypto"]
+
 storage = ["http", "tokio/fs"]
-compat = ["onebot-types/compat", "dep:uuid", "storage"]
+upload = ["onebot-connect-interface/upload"]
+crypto = ["dep:hmac", "dep:sha1"]
+
 ws = ["tokio-tungstenite"]
+hyper = ["dep:hyper", "dep:http-body-util", "dep:hyper-util"]
 http = ["reqwest"]
+

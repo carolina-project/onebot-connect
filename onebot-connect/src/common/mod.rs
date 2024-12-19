@@ -51,7 +51,7 @@ pub(self) enum Signal {
 
 /// Command handler trait
 /// Command is the data received from user code
-pub trait CmdHandler<C, M> {
+pub trait CmdHandler<C> {
     fn handle_cmd(
         &mut self,
         cmd: C,
@@ -59,7 +59,7 @@ pub trait CmdHandler<C, M> {
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_;
 }
 
-impl<F, R, C, M> CmdHandler<C, M> for F
+impl<F, R, C> CmdHandler<C> for F
 where
     F: Fn(C, ConnState) -> R,
     R: Future<Output = Result<(), crate::Error>> + Send + 'static,

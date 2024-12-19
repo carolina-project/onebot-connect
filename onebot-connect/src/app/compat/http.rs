@@ -1,13 +1,18 @@
+use std::{future::Future, net::SocketAddr, str::FromStr, sync::Arc};
+
 use super::*;
 use crate::{
-    app::{HttpInnerShared, RxMessageSource},
+    app::{self, HttpInner, HttpInnerShared, RxMessageSource},
     common::{http_s::HttpResponse, *},
 };
+use ::http::HeaderValue;
 use data::AppData;
-use http_s::HttpServerTask;
-use hyper::StatusCode;
+use hmac::{Hmac, Mac};
+use http_body_util::BodyExt;
+use http_s::{mk_resp, HttpReqProc, HttpServerTask, Req, Response};
+use hyper::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use onebot_connect_interface::{
-    app::{Connect, OBAppProvider, RecvMessage, RespArgs},
+    app::{Command, Connect, OBAppProvider, RecvMessage, RespArgs},
     ClosedReason,
 };
 use onebot_types::{
@@ -17,26 +22,176 @@ use onebot_types::{
         action::{self as ob12a, RespError, RetCode},
     },
 };
-use tokio::sync::{mpsc, oneshot};
+use parking_lot::RwLock;
+use sha1::Sha1;
+use tokio::sync::{mpsc::{self, UnboundedReceiver, UnboundedSender}, oneshot};
 
-pub struct HttpConnect;
+#[derive(Debug)]
+pub struct OB11PostConf {
+    secret: Option<String>,
+}
+type OB11HttpConfShared = Arc<RwLock<OB11PostConf>>;
 
-impl Connect for HttpConnect {
+pub struct OB11HttpProc<B, F, R>
+where
+    F: (Fn(bytes::Bytes) -> R) + Clone + Send + Sync,
+    R: Future<Output = Result<B, Response>> + Send + 'static,
+{
+    conf: OB11HttpConfShared,
+    proc: F,
+}
+
+impl<B, F, R> Clone for OB11HttpProc<B, F, R>
+where
+    F: (Fn(bytes::Bytes) -> R) + Clone + Send + Sync,
+    R: Future<Output = Result<B, Response>> + Send,
+{
+    fn clone(&self) -> Self {
+        Self {
+            conf: self.conf.clone(),
+            proc: self.proc.clone(),
+        }
+    }
+}
+
+impl<B, F, R> HttpReqProc for OB11HttpProc<B, F, R>
+where
+    F: (Fn(bytes::Bytes) -> R) + Clone + Send + Sync + 'static,
+    R: Future<Output = Result<B, Response>> + Send,
+    B: 'static,
+{
+    type Output = B;
+
+    async fn process_request(&self, req: Req) -> Result<Self::Output, Response> {
+        let read_body = |req: Req| async move {
+            Ok(req
+                .collect()
+                .await
+                .map_err(|e| {
+                    log::debug!("error while collecting data: {}", e);
+                    mk_resp(StatusCode::BAD_REQUEST, None::<String>)
+                })?
+                .to_bytes())
+        };
+
+        let body = if self.conf.read().secret.is_some() {
+            // check signature
+            let sig = req
+                .headers()
+                .get("X-Signature")
+                .ok_or_else(|| mk_resp(StatusCode::BAD_REQUEST, Some("missing signature")))?
+                .to_str()
+                .map_err(|_| mk_resp(StatusCode::BAD_REQUEST, Some("invalid signature")))?
+                .to_owned();
+
+            type HmacSha1 = Hmac<Sha1>;
+            let mut hash =
+                HmacSha1::new_from_slice(self.conf.read().secret.as_ref().unwrap().as_bytes())
+                    .map_err(|e| {
+                        log::error!("hmac err: {:?}", e);
+                        mk_resp(StatusCode::INTERNAL_SERVER_ERROR, None::<String>)
+                    })?;
+
+            let body = read_body(req).await?;
+            hash.update(&body);
+            let result = hex::encode(hash.finalize().into_bytes());
+
+            if sig[4..] != result {
+                return Err(mk_resp(
+                    StatusCode::UNAUTHORIZED,
+                    Some("signature check failed"),
+                ));
+            }
+            body
+        } else {
+            read_body(req).await?
+        };
+
+        (self.proc)(body).await
+    }
+}
+
+pub struct HttpConnect<A: Into<SocketAddr>> {
+    self_addr: A,
+    impl_url: String,
+    secret: Option<String>,
+    auth: Option<String>,
+}
+
+impl<A: Into<SocketAddr>> HttpConnect<A> {
+    pub fn new(self_addr: A, impl_url: impl Into<String>) -> Self {
+        Self {
+            self_addr,
+            impl_url: impl_url.into(),
+            secret: None,
+            auth: None,
+        }
+    }
+
+    pub fn with_secret(mut self, secret: impl Into<String>) -> Self {
+        self.secret = Some(secret.into());
+        self
+    }
+
+    async fn cmd_bridge(mut src: UnboundedReceiver<app::Command>, dest: UnboundedSender<HttpPostCommand>) {
+        while let Some(cmd) = src.recv().await {
+            match cmd {
+                Command::Action(_, _) => todo!(),
+                Command::Respond(_, _) => todo!(),
+                Command::GetConfig(_, _) => todo!(),
+                Command::SetConfig(_, _) => todo!(),
+                Command::Close => todo!(),
+            }
+        }
+    }
+}
+
+impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
     type Source = RxMessageSource;
     type Error = crate::Error;
     type Message = ();
     type Provider = HttpAppProvider;
 
-    async fn connect(
-        self,
-    ) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        HttpServerTask::create()
+    async fn connect(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
+        let conf = OB11PostConf {
+            secret: self.secret,
+        };
+        let data = AppData::default();
+        let mut app_provider = HttpAppProvider::new(
+            self.impl_url,
+            self.auth
+                .map(|r| HeaderValue::from_str(&format!("Bearer {}", r)))
+                .transpose()?,
+            data.clone(),
+        )?;
+        let handler = HttpPostHandler {
+            data,
+            app: app_provider.provide()?,
+        };
+        let (cmd_tx, msg_rx) = HttpServerTask::create(
+            self.self_addr,
+            handler,
+            OB11HttpProc {
+                conf: RwLock::new(conf).into(),
+                proc: |data| async move {
+                    match serde_json::from_slice(&data) {
+                        Ok(action) => Ok(action),
+                        Err(e) => {
+                            log::debug!("error while deserializing data: {}", e);
+                            Err(mk_resp(StatusCode::BAD_REQUEST, None::<String>))
+                        }
+                    }
+                },
+            },
+        ).await;
+
+        Ok((RxMessageSource::new(msg_rx), app_provider, ()))
     }
 
-    fn with_authorization(self, access_token: impl Into<String>) -> Self {
-        todo!()
+    fn with_authorization(mut self, access_token: impl Into<String>) -> Self {
+        self.auth = Some(access_token.into());
+        self
     }
-    
 }
 
 #[derive(Clone)]
@@ -130,7 +285,34 @@ impl OBApp for OB11HttpApp {
 }
 
 pub struct HttpAppProvider {
-    app: OB11HttpApp
+    app: OB11HttpApp,
+}
+
+impl HttpAppProvider {
+    pub fn new(
+        url: impl Into<String>,
+        auth_header: Option<HeaderValue>,
+        data: AppData,
+    ) -> Result<Self, reqwest::Error> {
+        let mut headers = HeaderMap::default();
+        if let Some(header) = auth_header {
+            headers.insert(AUTHORIZATION, header);
+        }
+
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+        Ok(Self {
+            app: OB11HttpApp {
+                inner: HttpInner {
+                    url: url.into(),
+                    http,
+                }
+                .into(),
+                data,
+            },
+        })
+    }
 }
 
 impl OBAppProvider for HttpAppProvider {
@@ -181,7 +363,7 @@ impl RecvHandler<(RawEvent, HttpPostResponder), RecvMessage> for HttpPostHandler
     }
 }
 
-impl CmdHandler<HttpPostCommand, HttpPostRecv> for HttpPostHandler {
+impl CmdHandler<HttpPostCommand> for HttpPostHandler {
     async fn handle_cmd(
         &mut self,
         cmd: HttpPostCommand,
@@ -195,13 +377,13 @@ impl CmdHandler<HttpPostCommand, HttpPostRecv> for HttpPostHandler {
     }
 }
 
-impl CloseHandler<HttpPostRecv> for HttpPostHandler {
+impl CloseHandler<RecvMessage> for HttpPostHandler {
     async fn handle_close(
         &mut self,
         result: Result<ClosedReason, String>,
-        msg_tx: mpsc::UnboundedSender<HttpPostRecv>,
+        msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {
-        msg_tx.send(HttpPostRecv::Close(result))?;
+        msg_tx.send(RecvMessage::Close(result))?;
         Ok(())
     }
 }

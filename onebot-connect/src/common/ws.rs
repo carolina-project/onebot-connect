@@ -18,7 +18,7 @@ use onebot_connect_interface::{ClosedReason, Error as OCErr};
 use super::*;
 
 pub(crate) trait WSTaskHandler<Cmd, Body, Msg>:
-    CmdHandler<(Cmd, mpsc::UnboundedSender<tungstenite::Message>), Msg>
+    CmdHandler<(Cmd, mpsc::UnboundedSender<tungstenite::Message>)>
     + RecvHandler<Body, Msg>
     + CloseHandler<Msg>
     + Send
@@ -26,7 +26,7 @@ pub(crate) trait WSTaskHandler<Cmd, Body, Msg>:
 {
 }
 impl<C, B, M, T> WSTaskHandler<C, B, M> for T where
-    T: CmdHandler<(C, mpsc::UnboundedSender<tungstenite::Message>), M>
+    T: CmdHandler<(C, mpsc::UnboundedSender<tungstenite::Message>)>
         + RecvHandler<B, M>
         + CloseHandler<M>
         + Send

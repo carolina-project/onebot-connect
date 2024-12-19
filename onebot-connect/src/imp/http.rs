@@ -28,7 +28,7 @@ type ActionRecv = (RawAction, ActionResponder);
 struct HttpHandler {
     resp_map: RespMap,
 }
-impl CmdHandler<Command, RecvMessage> for HttpHandler {
+impl CmdHandler<Command> for HttpHandler {
     async fn handle_cmd(&mut self, cmd: Command, state: ConnState) -> Result<(), crate::Error> {
         match cmd {
             Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
@@ -143,8 +143,12 @@ impl Create for HttpCreate {
     type Message = ();
 
     async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        let (cmd_tx, msg_rx) =
-            HttpServerTask::create(self.addr, self.config, HttpHandler::default(), parse_req).await;
+        let (cmd_tx, msg_rx) = HttpServerTask::create(
+            self.addr,
+            HttpHandler::default(),
+            OB12HttpProc::new(self.config, parse_req),
+        )
+        .await;
 
         Ok((
             RxMessageSource::new(msg_rx),

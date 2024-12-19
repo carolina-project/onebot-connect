@@ -63,7 +63,7 @@ impl WSHandler {
     }
 }
 
-impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>), RecvMessage> for WSHandler {
+impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHandler {
     async fn handle_cmd(
         &mut self,
         cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
