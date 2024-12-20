@@ -6,7 +6,7 @@ use super::Error;
 use onebot_types::{
     base::OBAction,
     ob12::{
-        action::{ActionDetail, GetLatestEvents},
+        action::{ActionDetail, GetLatestEvents, RespData, RespError},
         event::RawEvent,
         BotSelf,
     },
@@ -17,17 +17,14 @@ use onebot_types::{
 mod recv {
     use std::fmt::Debug;
 
-    use onebot_types::ob12::{
-        action::{ActionDetail, RespError, RespStatus, RetCode},
-        event::RawEvent,
-    };
+    use onebot_types::ob12::{action::ActionDetail, event::RawEvent};
     use tokio::sync::oneshot;
 
     use crate::ClosedReason;
 
     use super::*;
 
-    pub type ActionResponder = oneshot::Sender<Result<Value, Error>>;
+    pub type ActionResponder = oneshot::Sender<Result<RespData, Error>>;
 
     /// Application side messages received from connection
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,53 +44,6 @@ mod recv {
         pub self_: Option<BotSelf>,
     }
 
-    /// Response args passed to connection.
-    #[derive(Debug, Clone)]
-    pub struct RespArgs {
-        pub status: RespStatus,
-        pub retcode: RetCode,
-        pub data: Value,
-        pub message: String,
-    }
-
-    impl RespArgs {
-        pub fn failed(retcode: RetCode, msg: impl Into<String>) -> Self {
-            Self {
-                status: RespStatus::Failed,
-                retcode,
-                data: Value::Option(None),
-                message: msg.into(),
-            }
-        }
-
-        pub fn success<T: Serialize>(data: T) -> Result<Self, serde_value::SerializerError> {
-            Ok(Self {
-                status: RespStatus::Ok,
-                retcode: RetCode::Success,
-                data: serde_value::to_value(data)?,
-                message: Default::default(),
-            })
-        }
-
-        pub fn into_result(self, echo: Option<String>) -> Result<Value, RespError> {
-            let RespArgs {
-                status,
-                retcode,
-                data,
-                message,
-            } = self;
-            if status == RespStatus::Failed {
-                Err(RespError {
-                    retcode,
-                    message,
-                    echo,
-                })
-            } else {
-                Ok(data)
-            }
-        }
-    }
-
     /// Command enum to represent different commands that can be sent to connection
     pub enum Command {
         /// Send action and receive response
@@ -109,11 +59,11 @@ mod recv {
     }
 
     /// Receiver for messages from OneBot Connect
-    pub trait MessageSource {
+    pub trait MessageSource: Send + 'static {
         fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
-    pub trait MessageSourceDyn {
+    pub trait MessageSourceDyn: Send {
         fn poll_message(
             &mut self,
         ) -> Pin<Box<dyn Future<Output = Option<RecvMessage>> + Send + '_>>;
@@ -128,14 +78,14 @@ mod recv {
     }
 
     /// OneBot app side provider
-    pub trait OBAppProvider {
+    pub trait OBAppProvider: Send + 'static {
         type Output: OBApp;
 
-        fn use_event_pretext(&self) -> bool {
+        fn use_event_context(&self) -> bool {
             false
         }
 
-        fn set_event_pretext(&mut self, event: &RawEvent) {
+        fn set_event_context(&mut self, event: &RawEvent) {
             unimplemented!("set event {event:?}")
         }
 
@@ -146,9 +96,9 @@ mod recv {
     /// Trait to define the connection behavior
     pub trait Connect {
         /// Connection error type
-        type Error: ErrTrait;
+        type Error: ErrTrait + Send + 'static;
         /// Message after connection established successfully.
-        type Message: Debug;
+        type Message: Debug + Send;
         /// Client for applcation to call.
         type Provider: OBAppProvider;
         /// Message source for receiving messages.
@@ -164,7 +114,7 @@ mod recv {
 
 #[cfg(feature = "app_recv")]
 pub use recv::*;
-use serde::{de::IntoDeserializer, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
@@ -181,9 +131,9 @@ pub trait OBApp: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<RespData>, Error>> + Send + '_;
 
-    /// Close connection.
+    /// Close connection, **DO NOT** call `release()` after this.
     fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     /// Get config from connection.
@@ -226,7 +176,7 @@ pub trait AppDyn: Send + Sync {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<RespData>, Error>> + Send + '_>>;
 
     fn get_config<'a, 'b: 'a>(
         &'a self,
@@ -270,7 +220,7 @@ impl<T: OBApp + 'static> AppDyn for T {
         &self,
         action: ActionDetail,
         self_: Option<BotSelf>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, Error>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<RespData>, Error>> + Send + '_>> {
         Box::pin(self.send_action_impl(action, self_))
     }
 
@@ -374,12 +324,15 @@ impl<T: OBApp + Sync> AppExt for T {
                     self_,
                 )
                 .await?;
-            Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(
-                    resp.into_deserializer(),
-                )?),
-                None => None,
-            })
+            if let Some(resp) = resp {
+                if resp.is_success() {
+                    Ok(Some(<A::Resp as Deserialize>::deserialize(resp.data)?))
+                } else {
+                    Err(RespError::from(resp).into())
+                }
+            } else {
+                Ok(None)
+            }
         }
     }
 }
@@ -403,12 +356,15 @@ impl AppExt for dyn AppDyn + Sync {
                     self_,
                 )
                 .await?;
-            Ok(match resp {
-                Some(resp) => Some(<A::Resp as Deserialize>::deserialize(
-                    resp.into_deserializer(),
-                )?),
-                None => None,
-            })
+            if let Some(resp) = resp {
+                if resp.is_success() {
+                    Ok(Some(<A::Resp as Deserialize>::deserialize(resp.data)?))
+                } else {
+                    Err(RespError::from(resp).into())
+                }
+            } else {
+                Ok(None)
+            }
         }
     }
 }

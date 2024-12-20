@@ -10,9 +10,9 @@ pub mod ws_re;
 
 use onebot_connect_interface::imp::MessageSource;
 use onebot_connect_interface::imp::{
-    ActionEcho, ActionResponse, Command, OBImpl, OBImplProvider, RecvMessage,
+    ActionEcho, Command, OBImpl, OBImplProvider, RecvMessage,
 };
-use onebot_connect_interface::Error as OCError;
+use onebot_connect_interface::{Error as OCError, RespArgs};
 use onebot_types::ob12::event::RawEvent;
 use tokio::sync::mpsc;
 
@@ -36,7 +36,7 @@ impl OBImpl for TxImpl {
         Ok(self.tx.send(Command::Close)?)
     }
 
-    async fn respond(&self, echo: ActionEcho, data: ActionResponse) -> Result<(), OCError> {
+    async fn respond_impl(&self, echo: ActionEcho, data: RespArgs) -> Result<(), OCError> {
         self.tx
             .send(Command::Respond(echo, data))
             .map_err(OCError::closed)

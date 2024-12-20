@@ -5,12 +5,11 @@ use std::{
 use dashmap::DashMap;
 use onebot_connect_interface::{
     imp::{Action as ImpAction, Create},
-    ConfigError,
+    ConfigError, RespArgs,
 };
 use onebot_types::{
     ob12::{
-        self,
-        action::{GetLatestEvents, RawAction, RespData, RespStatus, RetCode},
+        action::{GetLatestEvents, RawAction, RespData},
         event::RawEvent,
     },
     OBAction,
@@ -76,24 +75,8 @@ impl CmdHandler<Command> for HttpHandler {
                         ActionEcho::Inner(_) => None,
                         ActionEcho::Outer(s) => Some(s),
                     };
-                    let response = match response {
-                        ActionResponse::Ok(data) => ob12::action::RespData {
-                            status: RespStatus::Ok,
-                            retcode: RetCode::Success,
-                            data,
-                            message: Default::default(),
-                            echo,
-                        },
-                        ActionResponse::Error { retcode, message } => ob12::action::RespData {
-                            status: RespStatus::Failed,
-                            retcode,
-                            data: serde_value::Value::Option(None),
-                            message,
-                            echo,
-                        },
-                    };
                     responder
-                        .send(HttpResponse::Ok(response))
+                        .send(HttpResponse::Ok(response.into_resp_data(echo)))
                         .map_err(|_| AllErr::ChannelClosed)
                 } else {
                     log::error!("cannot find action: {:?}", echo);
@@ -144,8 +127,9 @@ impl RecvHandler<ActionRecv, RecvMessage> for HttpHandler {
                 .impl_
                 .get_events(params.limit as _, Duration::from_secs(params.timeout as _))
                 .await;
-            let value = serde_value::to_value(events)?;
-            self.impl_.respond(echo, ActionResponse::Ok(value)).await?;
+            self.impl_
+                .respond_impl(echo, RespArgs::success(events.deref())?)
+                .await?;
             Ok(())
         } else {
             msg_tx
@@ -253,25 +237,26 @@ impl HttpImpl {
         timeout: Duration,
     ) -> impl Future<Output = Arc<VecDeque<RawEvent>>> + Send + '_ {
         async move {
-            let mut queue = self.queue.lock();
-            if queue.len() > 0 {
-                if limit == 0 {
-                    let events = std::mem::take(&mut *queue);
-                    events.into()
-                } else {
-                    Arc::new(queue.drain(..limit).collect())
+            {
+                let mut queue = self.queue.lock();
+                if queue.len() > 0 {
+                    return if limit == 0 {
+                        let events = std::mem::take(&mut *queue);
+                        events.into()
+                    } else {
+                        Arc::new(queue.drain(..limit).collect())
+                    };
                 }
-            } else {
-                let (tx, rx) = oneshot::channel();
+            }
 
-                self.waiting_queue.lock().push(tx);
-                tokio::select! {
-                    _ = tokio::time::sleep(timeout) => {
-                        Default::default()
-                    },
-                    event = rx => {
-                        event.unwrap()
-                    }
+            let (tx, rx) = oneshot::channel();
+            self.waiting_queue.lock().push(tx);
+            tokio::select! {
+                _ = tokio::time::sleep(timeout) => {
+                    Default::default()
+                },
+                event = rx => {
+                    event.unwrap()
                 }
             }
         }
@@ -289,7 +274,7 @@ impl OBImpl for HttpImpl {
         }
     }
 
-    async fn respond(&self, echo: ActionEcho, data: ActionResponse) -> Result<(), OCError> {
+    async fn respond_impl(&self, echo: ActionEcho, data: RespArgs) -> Result<(), OCError> {
         self.cmd_tx
             .send(Command::Respond(echo, data))
             .map_err(OCError::closed)

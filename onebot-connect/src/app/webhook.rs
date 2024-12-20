@@ -7,7 +7,7 @@ use crate::{
 
 use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
 use onebot_types::ob12::{
-    action::{ActionDetail, RawAction},
+    action::{ActionDetail, RawAction, RespData},
     event::RawEvent,
 };
 use parking_lot::Mutex;
@@ -160,7 +160,7 @@ impl OBApp for WebhookApp {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, OCError> {
+    ) -> Result<Option<RespData>, OCError> {
         self.inner.actions.lock().push(ActionArgs { action, self_ });
         Ok(None)
     }
@@ -206,11 +206,11 @@ impl WebhookAppProvider {
 impl OBAppProvider for WebhookAppProvider {
     type Output = WebhookApp;
 
-    fn use_event_pretext(&self) -> bool {
+    fn use_event_context(&self) -> bool {
         true
     }
 
-    fn set_event_pretext(&mut self, event: &RawEvent) {
+    fn set_event_context(&mut self, event: &RawEvent) {
         self.event_id = Some(event.id.to_owned())
     }
 

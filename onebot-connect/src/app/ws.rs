@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ::http::{header::*, HeaderValue};
 use onebot_connect_interface::{
     app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
-    ActionResult, ClosedReason, ConfigError, Error as OCError,
+    AllResult, ClosedReason, ConfigError, Error as OCError,
 };
 use onebot_types::ob12::{
     action::{RawAction, RespData},
@@ -28,7 +28,7 @@ use crate::{
 use super::*;
 use crate::Error as AllErr;
 
-type ActionMap = DashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
+type ActionMap = DashMap<String, oneshot::Sender<AllResult<RespData>>>;
 
 #[derive(Debug, Default, Clone)]
 pub struct WSHandler {
@@ -137,7 +137,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
                 Some(ref e) => {
                     if let Some((_, responder)) = self.map.remove(e) {
                         responder
-                            .send(Ok(resp.data))
+                            .send(Ok(resp))
                             .map_err(|_| crate::Error::ChannelClosed)?;
                     }
                 }

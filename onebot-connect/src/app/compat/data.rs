@@ -40,10 +40,7 @@ use onebot_types::{
     OBAction,
 };
 
-use onebot_connect_interface::{
-    app::{OBApp, RespArgs},
-    Error as OCErr,
-};
+use onebot_connect_interface::{app::OBApp, Error as OCErr, RespArgs};
 
 mod convert {
     use super::*;

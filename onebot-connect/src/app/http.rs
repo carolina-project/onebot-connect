@@ -79,7 +79,7 @@ impl OBApp for HttpApp {
         &self,
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, OCError> {
+    ) -> Result<Option<RespData>, OCError> {
         let http_resp = self
             .inner
             .http
@@ -102,7 +102,7 @@ impl OBApp for HttpApp {
             let response = http_resp.json::<RespData>().await.map_err(OCError::other)?;
 
             if response.is_success() {
-                Ok(Some(response.data))
+                Ok(Some(response))
             } else {
                 Err(OCError::Resp(response.into()))
             }

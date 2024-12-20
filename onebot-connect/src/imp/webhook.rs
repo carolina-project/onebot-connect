@@ -120,7 +120,7 @@ impl OBImpl for WebhookImpl {
         Ok(())
     }
 
-    async fn respond(&self, _: ActionEcho, _: ActionResponse) -> Result<(), OCError> {
+    async fn respond_impl(&self, _: ActionEcho, _: RespArgs) -> Result<(), OCError> {
         Err(OCError::not_supported("respond action"))
     }
 }

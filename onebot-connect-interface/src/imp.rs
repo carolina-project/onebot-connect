@@ -1,15 +1,13 @@
 use std::{fmt::Debug, future::Future, pin::Pin};
 
-use onebot_types::ob12::{
-    action::{ActionDetail, RetCode},
-    event::RawEvent,
-    BotSelf,
-};
+use onebot_types::ob12::{action::ActionDetail, event::RawEvent, BotSelf};
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 use tokio::sync::oneshot;
 
-use crate::{ClosedReason, ConfigError, Error};
+use crate::{ClosedReason, ConfigError, Error, RespArgs};
+
+use std::error::Error as ErrTrait;
 
 /// Error occurred during closing the connection.
 pub struct CloseError<T> {
@@ -34,10 +32,6 @@ pub struct Action {
     pub echo: ActionEcho,
     pub self_: Option<BotSelf>,
 }
-pub enum ActionResponse {
-    Ok(Value),
-    Error { retcode: RetCode, message: String },
-}
 /// Implementation side messages received from connection
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RecvMessage {
@@ -52,7 +46,7 @@ pub enum RecvMessage {
 pub enum Command {
     Event(RawEvent),
     /// Respond to the action by echo
-    Respond(ActionEcho, ActionResponse),
+    Respond(ActionEcho, RespArgs),
     /// Get connection config
     GetConfig(String, oneshot::Sender<Option<Value>>),
     /// Set connection config
@@ -62,11 +56,11 @@ pub enum Command {
 }
 
 /// Trait for polling messages from a OneBot implementation.
-pub trait MessageSource {
+pub trait MessageSource: Send + 'static {
     fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
 }
 
-pub trait OBImpl {
+pub trait OBImpl: Send {
     fn respond_supported(&self) -> bool {
         true
     }
@@ -76,10 +70,10 @@ pub trait OBImpl {
         event: RawEvent,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
-    fn respond(
+    fn respond_impl(
         &self,
         echo: ActionEcho,
-        data: ActionResponse,
+        data: RespArgs,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     /// Close connection.
@@ -87,7 +81,7 @@ pub trait OBImpl {
 }
 
 /// Trait for providing event transmitters.
-pub trait OBImplProvider {
+pub trait OBImplProvider: Send + 'static {
     type Output: OBImpl;
 
     fn provide(&mut self) -> Result<Self::Output, Error>;
@@ -109,10 +103,10 @@ pub trait OBImplDyn {
         event: RawEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 
-    fn respond(
+    fn respond_dyn(
         &self,
         echo: ActionEcho,
-        data: ActionResponse,
+        data: RespArgs,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 }
 
@@ -124,20 +118,20 @@ impl<T: OBImpl + Send + 'static> OBImplDyn for T {
         Box::pin(self.send_event_impl(event))
     }
 
-    fn respond(
+    fn respond_dyn(
         &self,
         echo: ActionEcho,
-        data: ActionResponse,
+        data: RespArgs,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>> {
-        Box::pin(self.respond(echo, data))
+        Box::pin(self.respond_impl(echo, data))
     }
 }
 
 pub trait Create {
-    type Error: std::error::Error;
+    type Error: ErrTrait + Send + 'static;
     type Source: MessageSource;
     type Provider: OBImplProvider;
-    type Message: Debug;
+    type Message: Debug + Send;
 
     fn create(
         self,

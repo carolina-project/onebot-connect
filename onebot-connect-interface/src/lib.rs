@@ -1,8 +1,8 @@
 use std::fmt::{Debug, Display};
 
-use onebot_types::ob12::action::RespError;
+use onebot_types::ob12::action::{RespData, RespError, RespStatus, RetCode};
 use serde::{Deserialize, Serialize};
-use serde_value::{DeserializerError, SerializerError};
+use serde_value::{DeserializerError, SerializerError, Value};
 use tokio::sync::mpsc::error::SendError;
 
 #[cfg(feature = "app")]
@@ -55,7 +55,7 @@ pub enum ConfigError {
     Other(String),
 }
 
-pub type ActionResult<T> = Result<T, Error>;
+pub type AllResult<T> = Result<T, Error>;
 
 impl Error {
     pub fn other<T: Display>(e: T) -> Self {
@@ -98,5 +98,86 @@ impl From<DeserializerError> for Error {
 impl<T> From<SendError<T>> for Error {
     fn from(e: SendError<T>) -> Self {
         Self::closed(e)
+    }
+}
+
+/// Response args passed to connection.
+#[derive(Debug, Clone)]
+pub struct RespArgs {
+    pub status: RespStatus,
+    pub retcode: RetCode,
+    pub data: Value,
+    pub message: String,
+}
+
+impl From<RespData> for RespArgs {
+    fn from(value: RespData) -> Self {
+        let RespData {
+            status,
+            retcode,
+            data,
+            message,
+            ..
+        } = value;
+        Self {
+            status,
+            retcode,
+            data,
+            message,
+        }
+    }
+}
+
+impl RespArgs {
+    pub fn failed(retcode: RetCode, msg: impl Into<String>) -> Self {
+        Self {
+            status: RespStatus::Failed,
+            retcode,
+            data: Value::Option(None),
+            message: msg.into(),
+        }
+    }
+
+    pub fn success<T: Serialize>(data: T) -> Result<Self, serde_value::SerializerError> {
+        Ok(Self {
+            status: RespStatus::Ok,
+            retcode: RetCode::Success,
+            data: serde_value::to_value(data)?,
+            message: Default::default(),
+        })
+    }
+
+    pub fn into_resp_data(self, echo: Option<String>) -> RespData {
+        let Self {
+            status,
+            retcode,
+            data,
+            message,
+        } = self;
+        RespData {
+            status,
+            retcode,
+            data,
+            message,
+            echo,
+        }
+    }
+
+    pub fn into_result(self, echo: Option<String>) -> Result<Value, RespError> {
+        let RespArgs {
+            status,
+            retcode,
+            data,
+            message,
+        } = self;
+        if status == RespStatus::Failed {
+            Err(RespError {
+                retcode,
+                message,
+                echo,
+            })
+        } else {
+            Ok(data)
+        }
     }
 }

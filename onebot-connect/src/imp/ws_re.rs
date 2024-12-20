@@ -1,6 +1,8 @@
 use ::http::{header::*, HeaderValue};
-use onebot_connect_interface::{imp::{Action, Create}, ClosedReason, ConfigError};
-use onebot_types::ob12::action::{RespData, RespStatus, RetCode};
+use onebot_connect_interface::{
+    imp::{Action, Create},
+    ClosedReason, ConfigError,
+};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{self, client::IntoClientRequest},
@@ -32,30 +34,13 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHa
                 .send(Err(ConfigError::UnknownKey(key)))
                 .map_err(|_| crate::Error::ChannelClosed),
             Command::Respond(echo, resp) => {
-                let (status, retcode, message, data) = match resp {
-                    ActionResponse::Ok(data) => {
-                        (RespStatus::Ok, RetCode::Success, Default::default(), data)
-                    }
-                    ActionResponse::Error { retcode, message } => (
-                        RespStatus::Failed,
-                        retcode,
-                        message,
-                        serde_value::Value::Option(None),
-                    ),
-                };
                 let echo = match echo {
                     ActionEcho::Inner(_) => None,
                     ActionEcho::Outer(echo) => Some(echo),
                 };
 
-                let data = serde_json::to_vec(&RespData {
-                    status,
-                    retcode,
-                    data,
-                    message,
-                    echo,
-                })
-                .map_err(OCError::serialize)?;
+                let data =
+                    serde_json::to_vec(&resp.into_resp_data(echo)).map_err(OCError::serialize)?;
 
                 data_tx.send(data.into()).map_err(OCError::closed)?;
                 Ok(())

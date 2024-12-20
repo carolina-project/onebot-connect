@@ -14,14 +14,14 @@ use http_body_util::BodyExt;
 use http_s::{mk_resp, HttpReqProc, HttpServerTask, Req, Response};
 use hyper::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use onebot_connect_interface::{
-    app::{Command, Connect, OBAppProvider, RecvMessage, RespArgs},
+    app::{Command, Connect, OBAppProvider, RecvMessage},
     ClosedReason, ConfigError,
 };
 use onebot_types::{
     ob11::{action as ob11a, RawEvent as OB11Event},
     ob12::{
         self,
-        action::{self as ob12a, RespError, RetCode},
+        action::{self as ob12a, RespData, RespError, RetCode},
     },
 };
 use parking_lot::RwLock;
@@ -222,7 +222,7 @@ impl OBApp for OB11HttpApp {
         &self,
         action: ob12a::ActionDetail,
         _self_: Option<ob12::BotSelf>,
-    ) -> Result<Option<serde_value::Value>, OCErr> {
+    ) -> Result<Option<RespData>, OCErr> {
         match self.data.convert_action(action, self).await? {
             data::ActionConverted::Send(ob11a::ActionDetail { action, params }) => {
                 let inner = &self.inner;
@@ -268,28 +268,11 @@ impl OBApp for OB11HttpApp {
                     .into());
                 }
 
-                Ok(Some(self.data.convert_resp_data(&action, data.data).await?))
-            }
-            data::ActionConverted::Respond(RespArgs {
-                status,
-                retcode,
-                data,
-                message,
-            }) => {
-                let resp = ob12a::RespData {
-                    status,
-                    retcode,
-                    data,
-                    message,
-                    echo: None,
-                };
+                let data = self.data.convert_resp_data(&action, data.data).await?;
 
-                if !resp.is_success() {
-                    Err(RespError::from(resp).into())
-                } else {
-                    Ok(Some(resp.data))
-                }
+                Ok(Some(RespData::success(data, None)))
             }
+            data::ActionConverted::Respond(resp) => Ok(Some(resp.into_resp_data(None))),
         }
     }
 

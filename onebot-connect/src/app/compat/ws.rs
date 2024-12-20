@@ -9,6 +9,7 @@ use onebot_connect_interface::app::{
 };
 use onebot_types::ob11::action::{RawAction, RespData};
 use onebot_types::ob11::RawEvent;
+use onebot_types::ob12::action as ob12a;
 use serde::Deserialize;
 use serde_json::Value as Json;
 use tokio::sync::{mpsc, oneshot};
@@ -19,11 +20,11 @@ use crate::app::{generate_echo, RxMessageSource, TxAppProvider, TxAppSide};
 use crate::common::ws::{WSTask, WsStream};
 use crate::common::{CloseHandler, CmdHandler, RecvHandler};
 use crate::Error as AllErr;
-use onebot_connect_interface::{ActionResult, ClosedReason, ConfigError, Error as OCError};
+use onebot_connect_interface::{AllResult, ClosedReason, ConfigError, Error as OCError};
 
 use super::data::{ActionConverted, AppData};
 
-type ActionMap = DashMap<String, (String, oneshot::Sender<ActionResult<serde_value::Value>>)>;
+type ActionMap = DashMap<String, (String, oneshot::Sender<AllResult<ob12a::RespData>>)>;
 
 struct WSHanderInner {
     map: ActionMap,
@@ -49,7 +50,8 @@ impl WSHandler {
                 map: Default::default(),
                 data,
                 app,
-            }.into(),
+            }
+            .into(),
         }
     }
 
@@ -66,7 +68,7 @@ impl WSHandler {
             ActionConverted::Send(send) => send,
             ActionConverted::Respond(data) => {
                 return responder
-                    .send(data.into_result(None).map_err(Into::into))
+                    .send(Ok(data.into_resp_data(None)))
                     .map_err(|_| AllErr::ChannelClosed)
             }
         };
@@ -163,10 +165,14 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
             RecvData::Response(resp) => match resp.echo {
                 Some(ref e) => {
                     if let Some((_, (name, responder))) = self.map.remove(e) {
-                        let converted = self.data.convert_resp_data(&name, resp.data).await?;
-                        responder
-                            .send(Ok(converted))
-                            .map_err(|_| crate::Error::ChannelClosed)?;
+                        if resp.is_success() {
+                            let converted = self.data.convert_resp_data(&name, resp.data).await?;
+                            responder
+                                .send(Ok(ob12a::RespData::success(converted, resp.echo)))
+                                .map_err(|_| crate::Error::ChannelClosed)?;
+                        }
+                    } else {
+                        log::error!("missing responder for echo `{e}`");
                     }
                 }
                 None => {
