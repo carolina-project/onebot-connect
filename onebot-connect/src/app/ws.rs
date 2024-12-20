@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ::http::{header::*, HeaderValue};
 use onebot_connect_interface::{
     app::{ActionArgs, ActionResponder, Command, Connect, RecvMessage},
@@ -26,16 +28,16 @@ use crate::{
 use super::*;
 use crate::Error as AllErr;
 
-type ActionMap = FxHashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
+type ActionMap = DashMap<String, oneshot::Sender<ActionResult<serde_value::Value>>>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct WSHandler {
-    map: ActionMap,
+    map: Arc<ActionMap>,
 }
 
 impl WSHandler {
     pub async fn handle_action(
-        &mut self,
+        &self,
         action_tx: mpsc::UnboundedSender<tungstenite::Message>,
         args: ActionArgs,
         responder: ActionResponder,
@@ -44,7 +46,7 @@ impl WSHandler {
         let echo = generate_echo(8, &self.map);
 
         let res = serde_json::to_vec(&RawAction {
-            action,
+            detail: action,
             echo: Some(echo.clone()),
             self_,
         });
@@ -66,7 +68,7 @@ impl WSHandler {
 
 impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHandler {
     async fn handle_cmd(
-        &mut self,
+        &self,
         cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
         state: crate::common::ConnState,
     ) -> Result<(), AllErr> {
@@ -120,7 +122,7 @@ impl<'de> Deserialize<'de> for RecvData {
 
 impl RecvHandler<RecvData, RecvMessage> for WSHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: RecvData,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
@@ -133,7 +135,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
             }
             RecvData::Response(resp) => match resp.echo {
                 Some(ref e) => {
-                    if let Some(responder) = self.map.remove(e) {
+                    if let Some((_, responder)) = self.map.remove(e) {
                         responder
                             .send(Ok(resp.data))
                             .map_err(|_| crate::Error::ChannelClosed)?;
@@ -150,7 +152,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
 
 impl CloseHandler<RecvMessage> for WSHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {

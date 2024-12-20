@@ -131,12 +131,16 @@ mod recv {
     pub trait OBAppProvider {
         type Output: OBApp;
 
+        fn use_event_pretext(&self) -> bool {
+            false
+        }
+
+        fn set_event_pretext(&mut self, event: &RawEvent) {
+            unimplemented!("set event {event:?}")
+        }
+
         /// Provides a OneBot app instance.
         fn provide(&mut self) -> Result<Self::Output, Error>;
-    }
-
-    pub trait ProviderWithEvent: OBAppProvider {
-        fn set_context(&mut self, event: &RawEvent);
     }
 
     /// Trait to define the connection behavior

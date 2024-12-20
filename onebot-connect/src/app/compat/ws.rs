@@ -1,4 +1,7 @@
-use fxhash::FxHashMap;
+use std::ops::Deref;
+use std::sync::Arc;
+
+use dashmap::DashMap;
 use http::header::AUTHORIZATION;
 use http::HeaderValue;
 use onebot_connect_interface::app::{
@@ -20,25 +23,38 @@ use onebot_connect_interface::{ActionResult, ClosedReason, ConfigError, Error as
 
 use super::data::{ActionConverted, AppData};
 
-type ActionMap = FxHashMap<String, (String, oneshot::Sender<ActionResult<serde_value::Value>>)>;
+type ActionMap = DashMap<String, (String, oneshot::Sender<ActionResult<serde_value::Value>>)>;
 
-pub struct WSHandler {
+struct WSHanderInner {
     map: ActionMap,
     data: AppData,
     app: TxAppSide,
+}
+#[derive(Clone)]
+struct WSHandler {
+    inner: Arc<WSHanderInner>,
+}
+impl Deref for WSHandler {
+    type Target = WSHanderInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl WSHandler {
     pub fn new(data: AppData, app: TxAppSide) -> Self {
         Self {
-            map: Default::default(),
-            data,
-            app,
+            inner: WSHanderInner {
+                map: Default::default(),
+                data,
+                app,
+            }.into(),
         }
     }
 
     pub async fn handle_action(
-        &mut self,
+        &self,
         action_tx: mpsc::UnboundedSender<tungstenite::Message>,
         args: ActionArgs,
         responder: ActionResponder,
@@ -78,7 +94,7 @@ impl WSHandler {
 
 impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHandler {
     async fn handle_cmd(
-        &mut self,
+        &self,
         cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
         state: crate::common::ConnState,
     ) -> Result<(), AllErr> {
@@ -132,7 +148,7 @@ impl<'de> Deserialize<'de> for RecvData {
 
 impl RecvHandler<RecvData, RecvMessage> for WSHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: RecvData,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
@@ -146,7 +162,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
             }
             RecvData::Response(resp) => match resp.echo {
                 Some(ref e) => {
-                    if let Some((name, responder)) = self.map.remove(e) {
+                    if let Some((_, (name, responder))) = self.map.remove(e) {
                         let converted = self.data.convert_resp_data(&name, resp.data).await?;
                         responder
                             .send(Ok(converted))
@@ -164,7 +180,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
 
 impl CloseHandler<RecvMessage> for WSHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {

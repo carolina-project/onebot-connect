@@ -223,6 +223,7 @@ pub(crate) trait HttpTaskHandler<Body, Resp, Cmd, Msg>:
     + RecvHandler<(Body, oneshot::Sender<HttpResponse<Resp>>), Msg>
     + CloseHandler<Msg>
     + Send
+    + Clone
     + 'static
 where
     Resp: Send + Serialize + 'static,
@@ -230,7 +231,12 @@ where
 }
 impl<B, R, C, M, T> HttpTaskHandler<B, R, C, M> for T
 where
-    T: CmdHandler<C> + RecvHandler<HttpResponder<B, R>, M> + CloseHandler<M> + Send + 'static,
+    T: CmdHandler<C>
+        + RecvHandler<HttpResponder<B, R>, M>
+        + CloseHandler<M>
+        + Send
+        + Clone
+        + 'static,
     R: Send + Serialize + 'static,
 {
 }
@@ -258,21 +264,30 @@ where
     Msg: Send + 'static,
     Cmd: Send + 'static,
 {
-    pub async fn create<Proc: HttpReqProc<Output = Body>>(
+    pub async fn create_with_channel<Proc: HttpReqProc<Output = Body>>(
         addr: impl Into<SocketAddr>,
         handler: Handler,
         req_proc: Proc,
-    ) -> (mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>) {
+        cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+        msg_tx: mpsc::UnboundedSender<Msg>
+    ) {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
         tokio::spawn(Self::server_task(addr.into(), body_tx, signal_rx, req_proc));
         tokio::spawn(Self::manage_task(
             body_rx, msg_tx, cmd_rx, signal_tx, handler,
         ));
+    }
 
+    pub async fn create<Proc: HttpReqProc<Output = Body>>(
+        addr: impl Into<SocketAddr>,
+        handler: Handler,
+        req_proc: Proc,
+    ) -> (mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>) {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        Self::create_with_channel(addr, handler, req_proc, cmd_rx, msg_tx).await;
         (cmd_tx, msg_rx)
     }
 
@@ -353,10 +368,21 @@ where
             let state = state.clone();
             tokio::select! {
                 Some((body, resp_tx)) = body_rx.recv() => {
-                    handler.handle_recv((body, resp_tx), msg_tx.clone(), state).await?;
+                    let mut handler = handler.clone();
+                    let msg_tx = msg_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_recv((body, resp_tx), msg_tx, state).await {
+                            log::error!("recv handler error: {e}")
+                        }
+                    });
                 }
                 Some(cmd) = cmd_rx.recv() => {
-                    handler.handle_cmd(cmd, state).await?;
+                    let handler = handler.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.clone().handle_cmd(cmd, state).await {
+                            log::error!("cmd handler error: {e}")
+                        }
+                    });
                 }
                 else => {
                     state.set_active(false);

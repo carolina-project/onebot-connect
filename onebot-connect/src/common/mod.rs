@@ -54,7 +54,7 @@ pub(self) enum Signal {
 /// Command is the data received from user code
 pub trait CmdHandler<C> {
     fn handle_cmd(
-        &mut self,
+        &self,
         cmd: C,
         state: ConnState,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_;
@@ -66,7 +66,7 @@ where
     R: Future<Output = Result<(), crate::Error>> + Send + 'static,
 {
     fn handle_cmd(
-        &mut self,
+        &self,
         cmd: C,
         state: ConnState,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_ {
@@ -78,7 +78,7 @@ where
 /// It produces message for user code at most time
 pub trait RecvHandler<D, M> {
     fn handle_recv(
-        &mut self,
+        &self,
         recv: D,
         msg_tx: UnboundedSender<M>,
         state: ConnState,
@@ -91,7 +91,7 @@ where
     R: Future<Output = Result<(), crate::Error>> + Send + 'static,
 {
     fn handle_recv(
-        &mut self,
+        &self,
         recv: D,
         msg_tx: UnboundedSender<M>,
         state: ConnState,
@@ -102,7 +102,7 @@ where
 
 pub trait CloseHandler<M> {
     fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: UnboundedSender<M>,
     ) -> impl Future<Output = Result<(), crate::Error>> + Send + '_;

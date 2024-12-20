@@ -1,4 +1,4 @@
-use fxhash::FxHashMap;
+use dashmap::DashMap;
 use onebot_connect_interface::{
     app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
     Error as OCError,
@@ -30,7 +30,7 @@ pub use {ws::WSConnect, ws_re::WSReConnect};
 pub(crate) static ACTION_ECHO_CHARSET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-pub fn generate_echo<V>(len: usize, map: &FxHashMap<String, V>) -> String {
+pub fn generate_echo<V>(len: usize, map: &DashMap<String, V>) -> String {
     let mut rng = rand::thread_rng();
 
     loop {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use ::http::{header::*, HeaderMap, HeaderValue};
+use onebot_connect_interface::imp::{Action, Create};
 
 use super::*;
 
@@ -90,6 +91,10 @@ pub struct WebhookImpl {
 }
 
 impl OBImpl for WebhookImpl {
+    fn respond_supported(&self) -> bool {
+        false
+    }
+
     async fn send_event_impl(&self, event: RawEvent) -> Result<(), OCError> {
         let resp: Vec<Action> = self
             .inner

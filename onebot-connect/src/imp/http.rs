@@ -1,14 +1,23 @@
-use std::{collections::VecDeque, net::SocketAddr, ops::Deref, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque, future::Future, net::SocketAddr, ops::Deref, sync::Arc, time::Duration,
+};
 
-use fxhash::FxHashMap;
-use onebot_connect_interface::{imp::Action as ImpAction, ConfigError};
-use onebot_types::ob12::{
-    self,
-    action::{RawAction, RespData, RespStatus, RetCode},
-    event::RawEvent,
+use dashmap::DashMap;
+use onebot_connect_interface::{
+    imp::{Action as ImpAction, Create},
+    ConfigError,
+};
+use onebot_types::{
+    ob12::{
+        self,
+        action::{GetLatestEvents, RawAction, RespData, RespStatus, RetCode},
+        event::RawEvent,
+    },
+    OBAction,
 };
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
+use serde::{de::IntoDeserializer, Deserialize};
 use tokio::sync::oneshot;
 
 use crate::common::{http_s::*, *};
@@ -19,15 +28,39 @@ use super::*;
 use crate::Error as AllErr;
 
 type ActionResponder = oneshot::Sender<HttpResponse<RespData>>;
-type RespMap = FxHashMap<ActionEcho, ActionResponder>;
+type RespMap = DashMap<ActionEcho, ActionResponder>;
 type ActionRecv = (RawAction, ActionResponder);
 
-#[derive(Default)]
-struct HttpHandler {
+struct HttpHandlerInner {
     resp_map: RespMap,
+    impl_: HttpImpl,
 }
+#[derive(Clone)]
+struct HttpHandler {
+    inner: Arc<HttpHandlerInner>,
+}
+impl Deref for HttpHandler {
+    type Target = HttpHandlerInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl HttpHandler {
+    fn new(impl_: HttpImpl) -> Self {
+        Self {
+            inner: HttpHandlerInner {
+                resp_map: Default::default(),
+                impl_,
+            }
+            .into(),
+        }
+    }
+}
+
 impl CmdHandler<Command> for HttpHandler {
-    async fn handle_cmd(&mut self, cmd: Command, state: ConnState) -> Result<(), crate::Error> {
+    async fn handle_cmd(&self, cmd: Command, state: ConnState) -> Result<(), crate::Error> {
         match cmd {
             Command::GetConfig(_, tx) => tx.send(None).map_err(|_| AllErr::ChannelClosed),
             Command::SetConfig((key, _), tx) => tx
@@ -38,7 +71,7 @@ impl CmdHandler<Command> for HttpHandler {
                 Ok(())
             }
             Command::Respond(echo, response) => {
-                if let Some(responder) = self.resp_map.remove(&echo) {
+                if let Some((echo, responder)) = self.resp_map.remove(&echo) {
                     let echo = match echo {
                         ActionEcho::Inner(_) => None,
                         ActionEcho::Outer(s) => Some(s),
@@ -76,41 +109,58 @@ impl CmdHandler<Command> for HttpHandler {
 }
 impl RecvHandler<ActionRecv, RecvMessage> for HttpHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: ActionRecv,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
-    ) -> Result<(), crate::Error> {
-        fn random_echo(map: &RespMap) -> ActionEcho {
-            let mut rand = thread_rng();
-            loop {
-                let echo = ActionEcho::Inner(rand.gen());
-                if !map.contains_key(&echo) {
-                    break echo;
-                } else {
-                    continue;
+    ) -> Result<(), AllErr> {
+        let (action, resp_tx) = recv;
+        let RawAction {
+            detail,
+            echo,
+            self_,
+        } = action;
+
+        let echo = match echo {
+            Some(echo) => ActionEcho::Outer(echo),
+            None => {
+                let mut rand = thread_rng();
+                loop {
+                    let echo = ActionEcho::Inner(rand.gen());
+                    if !self.resp_map.contains_key(&echo) {
+                        break echo;
+                    } else {
+                        continue;
+                    }
                 }
             }
-        }
-        let (action, resp_tx) = recv;
-        let echo = match action.echo {
-            Some(echo) => ActionEcho::Outer(echo),
-            None => random_echo(&self.resp_map),
         };
+
         self.resp_map.insert(echo.clone(), resp_tx);
 
-        msg_tx
-            .send(RecvMessage::Action(ImpAction {
-                action: action.action,
-                echo,
-                self_: action.self_,
-            }))
-            .map_err(|_| AllErr::ChannelClosed)
+        if &detail.action == GetLatestEvents::ACTION.unwrap() {
+            let params = GetLatestEvents::deserialize(detail.params.into_deserializer())?;
+            let events = self
+                .impl_
+                .get_events(params.limit as _, Duration::from_secs(params.timeout as _))
+                .await;
+            let value = serde_value::to_value(events)?;
+            self.impl_.respond(echo, ActionResponse::Ok(value)).await?;
+            Ok(())
+        } else {
+            msg_tx
+                .send(RecvMessage::Action(ImpAction {
+                    detail,
+                    echo,
+                    self_,
+                }))
+                .map_err(|_| AllErr::ChannelClosed)
+        }
     }
 }
 impl CloseHandler<RecvMessage> for HttpHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<onebot_connect_interface::ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {
@@ -141,18 +191,19 @@ impl Create for HttpCreate {
     type Message = ();
 
     async fn create(self) -> Result<(Self::Source, Self::Provider, Self::Message), Self::Error> {
-        let (cmd_tx, msg_rx) = HttpServerTask::create(
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        let mut app_provider = HttpImplProvider::new(cmd_tx);
+
+        HttpServerTask::create_with_channel(
             self.addr,
-            HttpHandler::default(),
+            HttpHandler::new(app_provider.provide()?),
             OB12HttpProc::new(self.config, parse_req),
+            cmd_rx,
+            msg_tx,
         )
         .await;
-
-        Ok((
-            RxMessageSource::new(msg_rx),
-            HttpImplProvider::new(cmd_tx),
-            (),
-        ))
+        Ok((RxMessageSource::new(msg_rx), app_provider, ()))
     }
 
     fn with_authorization(mut self, access_token: impl Into<String>) -> Self {
@@ -196,23 +247,31 @@ impl HttpImpl {
         }
     }
 
-    pub async fn get_events(&mut self, limit: usize, timeout: Duration) -> Arc<VecDeque<RawEvent>> {
-        let mut queue = self.queue.lock();
-        if queue.len() > 0 {
-            if limit == 0 {
-                Arc::new(std::mem::take(&mut queue))
+    pub fn get_events(
+        &self,
+        limit: usize,
+        timeout: Duration,
+    ) -> impl Future<Output = Arc<VecDeque<RawEvent>>> + Send + '_ {
+        async move {
+            let mut queue = self.queue.lock();
+            if queue.len() > 0 {
+                if limit == 0 {
+                    let events = std::mem::take(&mut *queue);
+                    events.into()
+                } else {
+                    Arc::new(queue.drain(..limit).collect())
+                }
             } else {
-                Arc::new(queue.drain(..limit).collect())
-            }
-        } else {
-            let (tx, rx) = oneshot::channel();
-            self.waiting_queue.lock().push(tx);
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => {
-                    Default::default()
-                },
-                event = rx => {
-                    event.unwrap()
+                let (tx, rx) = oneshot::channel();
+
+                self.waiting_queue.lock().push(tx);
+                tokio::select! {
+                    _ = tokio::time::sleep(timeout) => {
+                        Default::default()
+                    },
+                    event = rx => {
+                        event.unwrap()
+                    }
                 }
             }
         }

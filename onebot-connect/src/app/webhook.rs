@@ -5,10 +5,7 @@ use crate::{
     Error as AllErr,
 };
 
-use onebot_connect_interface::{
-    app::{Connect, ProviderWithEvent},
-    ClosedReason, ConfigError,
-};
+use onebot_connect_interface::{app::Connect, ClosedReason, ConfigError};
 use onebot_types::ob12::{
     action::{ActionDetail, RawAction},
     event::RawEvent,
@@ -18,15 +15,15 @@ use std::{net::SocketAddr, sync::Arc};
 
 type EventResponder = oneshot::Sender<HttpResponse<Vec<RawAction>>>;
 
-type ActionsMap = FxHashMap<String, EventResponder>;
-#[derive(Default)]
+type ActionsMap = DashMap<String, EventResponder>;
+#[derive(Default, Clone)]
 struct WHandler {
-    actions_map: ActionsMap,
+    actions_map: Arc<ActionsMap>,
 }
 
 impl CmdHandler<Command> for WHandler {
     async fn handle_cmd(
-        &mut self,
+        &self,
         cmd: Command,
         state: crate::common::ConnState,
     ) -> Result<(), crate::Error> {
@@ -35,11 +32,11 @@ impl CmdHandler<Command> for WHandler {
                 .send(Err(OCError::not_supported("send action actively").into()))
                 .map_err(|_| AllErr::ChannelClosed),
             Command::Respond(id, actions) => {
-                if let Some(tx) = self.actions_map.remove(&id) {
+                if let Some((_, tx)) = self.actions_map.remove(&id) {
                     let actions = actions
                         .into_iter()
                         .map(|ActionArgs { action, self_ }| RawAction {
-                            action,
+                            detail: action,
                             echo: None,
                             self_,
                         })
@@ -66,7 +63,7 @@ impl CmdHandler<Command> for WHandler {
 
 impl RecvHandler<(RawEvent, EventResponder), RecvMessage> for WHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: (RawEvent, EventResponder),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
@@ -82,7 +79,7 @@ impl RecvHandler<(RawEvent, EventResponder), RecvMessage> for WHandler {
 
 impl CloseHandler<RecvMessage> for WHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {
@@ -209,17 +206,19 @@ impl WebhookAppProvider {
 impl OBAppProvider for WebhookAppProvider {
     type Output = WebhookApp;
 
+    fn use_event_pretext(&self) -> bool {
+        true
+    }
+
+    fn set_event_pretext(&mut self, event: &RawEvent) {
+        self.event_id = Some(event.id.to_owned())
+    }
+
     fn provide(&mut self) -> Result<Self::Output, OCError> {
         if let Some(id) = self.event_id.take() {
             Ok(WebhookApp::new(id, self.cmd_tx.clone()))
         } else {
             Err(OCError::not_supported("send action actively not supported"))
         }
-    }
-}
-
-impl ProviderWithEvent for WebhookAppProvider {
-    fn set_context(&mut self, event: &RawEvent) {
-        self.event_id = Some(event.id.to_owned())
     }
 }

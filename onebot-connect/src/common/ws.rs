@@ -7,7 +7,9 @@ use futures_util::{
 use http::{header::AUTHORIZATION, StatusCode};
 use serde::de::DeserializeOwned;
 use tokio::{
-    io::{AsyncRead, AsyncWrite}, net::{TcpListener, TcpStream, ToSocketAddrs}, sync::{mpsc, oneshot}
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, TcpStream, ToSocketAddrs},
+    sync::{mpsc, oneshot},
 };
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::WebSocketStream;
@@ -61,6 +63,7 @@ pub(crate) trait WSTaskHandler<Cmd, Body, Msg>:
     + RecvHandler<Body, Msg>
     + CloseHandler<Msg>
     + Send
+    + Clone
     + 'static
 {
 }
@@ -69,6 +72,7 @@ impl<C, B, M, T> WSTaskHandler<C, B, M> for T where
         + RecvHandler<B, M>
         + CloseHandler<M>
         + Send
+        + Clone
         + 'static
 {
 }
@@ -144,17 +148,29 @@ where
             let state = state.clone();
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
-                    handler.handle_cmd((cmd, send_tx.clone()), state).await?;
+                    let send_tx = send_tx.clone();
+                    let mut handler = handler.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_cmd((cmd, send_tx), state).await {
+                            log::error!("cmd handler err: {e}")
+                        }
+                    });
                 },
                 Some(msg) = recv_rx.recv() => {
-                    let recv: B = match serde_json::from_slice(&msg.into_data()) {
-                        Ok(recv) => {recv},
-                        Err(e) => {
-                            log::error!("error while deserializing data: {}", e);
-                            continue;
-                        },
-                    };
-                    handler.handle_recv(recv, msg_tx.clone(), state).await?;
+                    let handler = handler.clone();
+                    let msg_tx = msg_tx.clone();
+                    tokio::spawn(async move {
+                        let recv: B = match serde_json::from_slice(&msg.into_data()) {
+                            Ok(recv) => recv,
+                            Err(e) => {
+                                log::error!("error while deserializing data: {e}");
+                                return
+                            },
+                        };
+                        if let Err(e) = handler.handle_recv(recv, msg_tx, state).await {
+                            log::error!("recv handler err: {e}")
+                        }
+                    });
                 },
                 else => return Err(AllErr::ChannelClosed),
             }

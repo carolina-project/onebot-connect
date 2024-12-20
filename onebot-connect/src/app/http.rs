@@ -85,7 +85,7 @@ impl OBApp for HttpApp {
             .http
             .post(&self.inner.url)
             .json(&RawAction {
-                action,
+                detail: action,
                 echo: None,
                 self_,
             })

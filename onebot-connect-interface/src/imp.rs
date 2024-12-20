@@ -30,7 +30,7 @@ pub enum ActionEcho {
 /// **Inner** Action representation
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Action {
-    pub action: ActionDetail,
+    pub detail: ActionDetail,
     pub echo: ActionEcho,
     pub self_: Option<BotSelf>,
 }
@@ -67,6 +67,10 @@ pub trait MessageSource {
 }
 
 pub trait OBImpl {
+    fn respond_supported(&self) -> bool {
+        true
+    }
+
     fn send_event_impl(
         &self,
         event: RawEvent,
@@ -105,7 +109,7 @@ pub trait OBImplDyn {
         event: RawEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + '_>>;
 
-    fn respond_action(
+    fn respond(
         &self,
         echo: ActionEcho,
         data: ActionResponse,
@@ -120,7 +124,7 @@ impl<T: OBImpl + Send + 'static> OBImplDyn for T {
         Box::pin(self.send_event_impl(event))
     }
 
-    fn respond_action(
+    fn respond(
         &self,
         echo: ActionEcho,
         data: ActionResponse,

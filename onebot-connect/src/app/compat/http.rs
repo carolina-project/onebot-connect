@@ -1,6 +1,6 @@
 use onebot_connect_interface::app::OBApp;
 use onebot_connect_interface::Error as OCErr;
-use std::{future::Future, net::SocketAddr, sync::Arc};
+use std::{future::Future, net::SocketAddr, ops::Deref, sync::Arc};
 
 use super::*;
 use crate::{
@@ -178,8 +178,11 @@ impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
             data.clone(),
         )?;
         let handler = HttpPostHandler {
-            data,
-            app: app_provider.provide()?,
+            inner: HttpPostHandlerInner {
+                data,
+                app: app_provider.provide()?,
+            }
+            .into(),
         };
         let (_cmd_tx, msg_rx) = HttpServerTask::create(
             self.self_addr,
@@ -353,14 +356,26 @@ pub enum HttpPostCommand {
     Close,
 }
 
-pub struct HttpPostHandler {
+struct HttpPostHandlerInner {
     data: AppData,
     app: OB11HttpApp,
 }
 
+#[derive(Clone)]
+struct HttpPostHandler {
+    inner: Arc<HttpPostHandlerInner>,
+}
+impl Deref for HttpPostHandler {
+    type Target = HttpPostHandlerInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl RecvHandler<(OB11Event, HttpPostResponder), RecvMessage> for HttpPostHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: (OB11Event, HttpPostResponder),
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: ConnState,
@@ -380,11 +395,7 @@ impl RecvHandler<(OB11Event, HttpPostResponder), RecvMessage> for HttpPostHandle
 }
 
 impl CmdHandler<HttpPostCommand> for HttpPostHandler {
-    async fn handle_cmd(
-        &mut self,
-        cmd: HttpPostCommand,
-        state: ConnState,
-    ) -> Result<(), crate::Error> {
+    async fn handle_cmd(&self, cmd: HttpPostCommand, state: ConnState) -> Result<(), crate::Error> {
         match cmd {
             HttpPostCommand::Close => state.set_active(false),
         }
@@ -395,7 +406,7 @@ impl CmdHandler<HttpPostCommand> for HttpPostHandler {
 
 impl CloseHandler<RecvMessage> for HttpPostHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {

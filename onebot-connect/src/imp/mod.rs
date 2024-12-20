@@ -9,7 +9,9 @@ pub mod ws;
 pub mod ws_re;
 
 use onebot_connect_interface::imp::MessageSource;
-use onebot_connect_interface::imp::*;
+use onebot_connect_interface::imp::{
+    ActionEcho, ActionResponse, Command, OBImpl, OBImplProvider, RecvMessage,
+};
 use onebot_connect_interface::Error as OCError;
 use onebot_types::ob12::event::RawEvent;
 use tokio::sync::mpsc;

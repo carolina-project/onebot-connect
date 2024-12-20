@@ -4,9 +4,6 @@ use onebot_connect_interface::{
     app::{self, Connect, MessageSource as AMessageSource, OBApp, OBAppProvider},
     imp::{self, Action, Create, MessageSource as IMessageSource, OBImpl, OBImplProvider}, ActionResult,
 };
-use onebot_types::ob12;
-
-use crate::Error as AllErr;
 
 pub struct OBridge<A, I>
 where
@@ -43,7 +40,7 @@ where
         tokio::spawn(async { while let Some(msg) = impl_msg_src.poll_message().await {
             match msg {
                 imp::RecvMessage::Action(Action {
-                    action,
+                    detail: action,
                     echo,
                     self_,
                 }) => {

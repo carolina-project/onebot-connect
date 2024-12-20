@@ -1,5 +1,5 @@
 use ::http::{header::*, HeaderValue};
-use onebot_connect_interface::{ClosedReason, ConfigError};
+use onebot_connect_interface::{imp::{Action, Create}, ClosedReason, ConfigError};
 use onebot_types::ob12::action::{RespData, RespStatus, RetCode};
 use tokio_tungstenite::{
     connect_async,
@@ -11,12 +11,12 @@ use crate::common::{ws::WSTask, CloseHandler, CmdHandler, RecvHandler};
 use super::*;
 use crate::Error as AllErr;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct WSHandler;
 
 impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHandler {
     async fn handle_cmd(
-        &mut self,
+        &self,
         cmd: (Command, mpsc::UnboundedSender<tungstenite::Message>),
         state: crate::common::ConnState,
     ) -> Result<(), AllErr> {
@@ -72,7 +72,7 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHa
 }
 impl RecvHandler<Action, RecvMessage> for WSHandler {
     async fn handle_recv(
-        &mut self,
+        &self,
         recv: Action,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
         _state: crate::common::ConnState,
@@ -84,7 +84,7 @@ impl RecvHandler<Action, RecvMessage> for WSHandler {
 }
 impl CloseHandler<RecvMessage> for WSHandler {
     async fn handle_close(
-        &mut self,
+        &self,
         result: Result<ClosedReason, String>,
         msg_tx: mpsc::UnboundedSender<RecvMessage>,
     ) -> Result<(), crate::Error> {
