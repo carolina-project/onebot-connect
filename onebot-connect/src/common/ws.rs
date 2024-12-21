@@ -159,7 +159,7 @@ where
                 Some(msg) = recv_rx.recv() => {
                     let handler = handler.clone();
                     let msg_tx = msg_tx.clone();
-                    log::debug!("recv: {}", msg);
+                    log::trace!("recv: {}", msg);
                     tokio::spawn(async move {
                         let recv: B = match serde_json::from_slice(&msg.into_data()) {
                             Ok(recv) => recv,

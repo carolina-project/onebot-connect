@@ -38,20 +38,21 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHa
                     ActionEcho::Inner(_) => None,
                     ActionEcho::Outer(echo) => Some(echo),
                 };
-
                 let data =
                     serde_json::to_vec(&resp.into_resp_data(echo)).map_err(OCError::serialize)?;
 
                 data_tx.send(data.into()).map_err(OCError::closed)?;
                 Ok(())
             }
-            Command::Event(event) => Ok(data_tx
-                .send(
-                    serde_json::to_vec(&event)
-                        .map_err(OCError::serialize)?
-                        .into(),
-                )
-                .map_err(OCError::closed)?),
+            Command::Event(event) => {
+                Ok(data_tx
+                    .send(
+                        serde_json::to_string(&event)
+                            .map_err(OCError::serialize)?
+                            .into(),
+                    )
+                    .map_err(OCError::closed)?)
+            }
         }
     }
 }
@@ -79,14 +80,14 @@ impl CloseHandler<RecvMessage> for WSHandler {
     }
 }
 
-pub struct WSCreate<R>
+pub struct WSReCreate<R>
 where
     R: IntoClientRequest + Unpin,
 {
     req: R,
     access_token: Option<String>,
 }
-impl<R: IntoClientRequest + Unpin> WSCreate<R> {
+impl<R: IntoClientRequest + Unpin> WSReCreate<R> {
     pub fn new(req: R) -> Self {
         Self {
             req,
@@ -95,7 +96,7 @@ impl<R: IntoClientRequest + Unpin> WSCreate<R> {
     }
 }
 
-impl<R> Create for WSCreate<R>
+impl<R> Create for WSReCreate<R>
 where
     R: IntoClientRequest + Unpin,
 {

@@ -5,8 +5,9 @@ use onebot_connect_interface::{
     imp::{self, Action, Create, OBImpl, OBImplProvider},
     AllResult, RespArgs,
 };
+use tokio::task::{JoinError, JoinHandle};
 
-/// Use the OneBot Application as a source, OneBot Implementation as a sink, bridge between them.
+/// A simple connection bridge, use the OneBot Application as a source, OneBot Implementation as a sink, bridge between them.
 pub struct OBridge<A, I>
 where
     A: OBAppProvider,
@@ -14,6 +15,8 @@ where
 {
     app_side: A,
     impl_side: I,
+    app_task: JoinHandle<AllResult<()>>,
+    impl_task: JoinHandle<AllResult<()>>,
 }
 
 impl<A, I> OBridge<A, I>
@@ -26,8 +29,14 @@ where
         AC: Connect<Provider = A>,
         IC: Create<Provider = I>,
     {
-        let (app_msg_src, mut app_prov, _) = app_conn.connect().await?;
-        let (impl_msg_src, mut impl_prov, _) = impl_create.create().await?;
+        let (app_msg_src, mut app_prov, _) = app_conn
+            .connect()
+            .await
+            .map_err(|e| format!("app connect err: {e}"))?;
+        let (impl_msg_src, mut impl_prov, _) = impl_create
+            .create()
+            .await
+            .map_err(|e| format!("impl connect err: {e}"))?;
 
         if app_prov.use_event_context() {
             log::warn!("Event context is being used by the app provider, actions will be ignored.");
@@ -45,7 +54,7 @@ where
                             log::info!("app connection recv closed: {r:?}");
                         }
                         Err(e) => {
-                            log::info!("app connection close error: {e}")
+                            log::error!("app connection close error: {e}")
                         }
                     },
                 }
@@ -54,16 +63,7 @@ where
             Ok(())
         }
         let impl_ = impl_prov.provide()?;
-        tokio::spawn(async move {
-            match app_task(app_msg_src, impl_).await {
-                Ok(_) => {
-                    log::info!("App task stopped.")
-                }
-                Err(e) => {
-                    log::error!("App task stopped with error: {e}")
-                }
-            }
-        });
+        let app_handle = tokio::spawn(app_task(app_msg_src, impl_));
 
         async fn impl_task(
             mut impl_src: impl imp::MessageSource,
@@ -116,20 +116,13 @@ where
         let app = app_prov.provide()?;
         let impl_ = impl_prov.provide()?;
         let use_event = app_prov.use_event_context();
-        tokio::spawn(async move {
-            match impl_task(impl_msg_src, app, impl_, use_event).await {
-                Ok(_) => {
-                    log::info!("Impl task stopped.")
-                }
-                Err(e) => {
-                    log::error!("Impl task stopped with error: {e}")
-                }
-            }
-        });
+        let impl_handle = tokio::spawn(impl_task(impl_msg_src, app, impl_, use_event));
 
         Ok(Self {
             app_side: app_prov,
             impl_side: impl_prov,
+            app_task: app_handle,
+            impl_task: impl_handle,
         })
     }
 
@@ -138,5 +131,12 @@ where
         self.impl_side.provide()?.close().await?;
 
         Ok(())
+    }
+
+    pub async fn join(self) -> Result<(AllResult<()>, AllResult<()>), JoinError> {
+        let app_res = self.app_task.await?;
+        let imp_res = self.impl_task.await?;
+
+        Ok((app_res, imp_res))
     }
 }

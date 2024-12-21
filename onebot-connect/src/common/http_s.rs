@@ -339,7 +339,7 @@ where
                         io,
                         service_fn(|r| async {
                             Ok::<Response, Infallible>(
-                                serv.clone().handle_req(r).await.unwrap_err(),
+                                serv.clone().handle_req(r).await.unwrap_or_else(|e| e),
                             )
                         }),
                     )
