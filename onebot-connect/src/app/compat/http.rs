@@ -116,14 +116,14 @@ where
     }
 }
 
-pub struct HttpConnect<A: Into<SocketAddr>> {
+pub struct OB11HttpConnect<A: Into<SocketAddr>> {
     self_addr: A,
     impl_url: String,
     secret: Option<String>,
     auth: Option<String>,
 }
 
-impl<A: Into<SocketAddr>> HttpConnect<A> {
+impl<A: Into<SocketAddr>> OB11HttpConnect<A> {
     pub fn new(self_addr: A, impl_url: impl Into<String>) -> Self {
         Self {
             self_addr,
@@ -159,7 +159,7 @@ impl<A: Into<SocketAddr>> HttpConnect<A> {
     }
 }
 
-impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
+impl<A: Into<SocketAddr>> Connect for OB11HttpConnect<A> {
     type Source = RxMessageSource;
     type Error = crate::Error;
     type Message = ();
@@ -193,14 +193,14 @@ impl<A: Into<SocketAddr>> Connect for HttpConnect<A> {
                     match serde_json::from_slice(&data) {
                         Ok(action) => Ok(action),
                         Err(e) => {
-                            log::debug!("error while deserializing data: {}", e);
+                            log::error!("error while deserializing data: {}", e);
                             Err(mk_resp(StatusCode::BAD_REQUEST, None::<String>))
                         }
                     }
                 },
             },
         )
-        .await;
+        .await?;
 
         Ok((RxMessageSource::new(msg_rx), app_provider, ()))
     }
@@ -364,6 +364,7 @@ impl RecvHandler<(OB11Event, HttpPostResponder), RecvMessage> for HttpPostHandle
         _state: ConnState,
     ) -> Result<(), crate::Error> {
         let (event, respond) = recv;
+        self.data.update_self_id(event.self_id);
         msg_tx.send(RecvMessage::Event(
             self.data.convert_event(event, &msg_tx, &self.app).await?,
         ))?;

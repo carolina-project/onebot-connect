@@ -157,6 +157,7 @@ impl RecvHandler<RecvData, RecvMessage> for WSHandler {
     ) -> Result<(), AllErr> {
         match recv {
             RecvData::Event(event) => {
+                self.data.update_self_id(event.self_id);
                 let converted = self.data.convert_event(event, &msg_tx, &self.app).await?;
                 msg_tx
                     .send(RecvMessage::Event(converted))

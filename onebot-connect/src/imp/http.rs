@@ -186,7 +186,7 @@ impl Create for HttpCreate {
             cmd_rx,
             msg_tx,
         )
-        .await;
+        .await?;
         Ok((RxMessageSource::new(msg_rx), app_provider, ()))
     }
 

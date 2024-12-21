@@ -4,11 +4,13 @@ use crate::ConfigError;
 
 use super::Error;
 use onebot_types::{
-    base::OBAction,
+    base::{MessageChain, OBAction},
     ob12::{
-        action::{ActionDetail, GetLatestEvents, RespData, RespError},
+        action::{
+            ActionDetail, GetLatestEvents, RespData, RespError, SendMessage, SendMessageResp,
+        },
         event::RawEvent,
-        BotSelf,
+        BotSelf, ChatTarget,
     },
     ValueMap,
 };
@@ -301,6 +303,28 @@ pub trait AppExt {
 
             let response = self.send_action(action, self_).await?;
             process_resp(response)
+        }
+    }
+
+    fn send_message(
+        &self,
+        target: ChatTarget,
+        message: MessageChain,
+        self_: Option<BotSelf>,
+    ) -> impl std::future::Future<Output = Result<SendMessageResp, Error>> + Send
+    where
+        Self: Sync,
+    {
+        async {
+            self.call_action(
+                SendMessage {
+                    target,
+                    message,
+                    extra: Default::default(),
+                },
+                self_,
+            )
+            .await
         }
     }
 }

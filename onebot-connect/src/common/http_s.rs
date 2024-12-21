@@ -203,7 +203,14 @@ where
         let (tx, rx) = oneshot::channel();
         body_tx.send((body, tx)).unwrap();
         // acquire response
-        match rx.await.unwrap() {
+        let resp = match rx.await {
+            Ok(resp) => resp,
+            Err(e) => {
+                log::error!("resp channel closed, please look out the error log.");
+                return Err(mk_resp(StatusCode::INTERNAL_SERVER_ERROR, None::<String>));
+            }
+        };
+        match resp {
             HttpResponse::Ok(data) => {
                 let resp = serde_json::to_vec(&data).map_err(|e| {
                     mk_resp(
@@ -269,30 +276,45 @@ where
         handler: Handler,
         req_proc: Proc,
         cmd_rx: mpsc::UnboundedReceiver<Cmd>,
-        msg_tx: mpsc::UnboundedSender<Msg>
-    ) {
+        msg_tx: mpsc::UnboundedSender<Msg>,
+    ) -> Result<(), AllErr> {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
-        tokio::spawn(Self::server_task(addr.into(), body_tx, signal_rx, req_proc));
-        tokio::spawn(Self::manage_task(
-            body_rx, msg_tx, cmd_rx, signal_tx, handler,
-        ));
+        let listener = TcpListener::bind(addr.into()).await?;
+        tokio::spawn(async move {
+            match Self::server_task(listener, body_tx, signal_rx, req_proc).await {
+                Ok(()) => {}
+                Err(e) => {
+                    log::error!("server task stopped with err: {e}");
+                }
+            }
+        });
+        tokio::spawn(async move {
+            match Self::manage_task(body_rx, msg_tx, cmd_rx, signal_tx, handler).await {
+                Ok(reason) => {
+                    log::info!("manage task stopped({reason:?})")
+                }
+                Err(e) => log::error!("manage task stopped with err: {e}"),
+            }
+        });
+
+        Ok(())
     }
 
     pub async fn create<Proc: HttpReqProc<Output = Body>>(
         addr: impl Into<SocketAddr>,
         handler: Handler,
         req_proc: Proc,
-    ) -> (mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>) {
+    ) -> Result<(mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>), AllErr> {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        Self::create_with_channel(addr, handler, req_proc, cmd_rx, msg_tx).await;
-        (cmd_tx, msg_rx)
+        Self::create_with_channel(addr, handler, req_proc, cmd_rx, msg_tx).await?;
+        Ok((cmd_tx, msg_rx))
     }
 
     async fn server_task<Proc>(
-        addr: SocketAddr,
+        listener: TcpListener,
         body_tx: mpsc::UnboundedSender<HttpResponder<Body, Resp>>,
         mut signal_rx: mpsc::UnboundedReceiver<Signal>,
         req_proc: Proc,
@@ -300,7 +322,6 @@ where
     where
         Proc: HttpReqProc<Output = Body> + Send + 'static,
     {
-        let listener = TcpListener::bind(addr).await?;
         let serv = HttpServer::new(body_tx, req_proc);
 
         async fn handle_http<

@@ -1,11 +1,10 @@
 use dashmap::DashMap;
-use onebot_connect_interface::{
-    app::{ActionArgs, Command, MessageSource, OBApp, OBAppProvider, RecvMessage},
-    Error as OCError,
-};
+use onebot_connect_interface::Error as OCError;
 use onebot_types::ob12::action::{ActionDetail, RespData};
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
+
+pub use onebot_connect_interface::app::*;
 
 #[cfg(feature = "compat")]
 pub mod compat;

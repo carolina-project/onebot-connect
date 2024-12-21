@@ -113,7 +113,7 @@ impl Connect for WebhookConnect {
             WHandler::default(),
             OB12HttpProc::new(self.config, parse_req),
         )
-        .await;
+        .await?;
 
         Ok((
             RxMessageSource::new(msg_rx),

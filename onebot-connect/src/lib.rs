@@ -5,6 +5,17 @@ use onebot_types::ob12::action::RespError;
 use serde_value::{DeserializerError, SerializerError};
 use tokio::sync::mpsc;
 
+pub mod ob12 {
+    pub use onebot_types::ob12::*;
+}
+
+#[cfg(feature = "compat")]
+pub mod ob11 {
+    pub use onebot_types::ob11::*;
+}
+
+pub use onebot_types::{base::MessageChain, select_msg};
+
 #[cfg(feature = "app")]
 pub mod app;
 #[cfg(feature = "imp")]
@@ -73,8 +84,15 @@ impl From<RespError> for Error {
 
 #[cfg(feature = "storage")]
 impl From<onebot_connect_interface::upload::UploadError> for Error {
-    fn from(value: onebot_connect_interface::upload::UploadError) -> Self {
-        Self::OneBotConnect(value.into())
+    fn from(err: onebot_connect_interface::upload::UploadError) -> Self {
+        Self::OneBotConnect(err.into())
+    }
+}
+
+#[cfg(feature = "compat")]
+impl From<onebot_types::compat::CompatError> for Error {
+    fn from(err: onebot_types::compat::CompatError) -> Self {
+        Self::OneBotConnect(err.into()).into()
     }
 }
 

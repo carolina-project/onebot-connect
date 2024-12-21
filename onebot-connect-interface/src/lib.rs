@@ -1,6 +1,9 @@
 use std::fmt::{Debug, Display};
 
-use onebot_types::ob12::action::{RespData, RespError, RespStatus, RetCode};
+use onebot_types::{
+    compat::CompatError,
+    ob12::action::{RespData, RespError, RespStatus, RetCode},
+};
 use serde::{Deserialize, Serialize};
 use serde_value::{DeserializerError, SerializerError, Value};
 use tokio::sync::mpsc::error::SendError;
@@ -24,6 +27,9 @@ pub enum ClosedReason {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "compat")]
+    #[error(transparent)]
+    Compat(#[from] CompatError),
     #[error(transparent)]
     Resp(#[from] RespError),
     #[error("serialize error: {0}")]

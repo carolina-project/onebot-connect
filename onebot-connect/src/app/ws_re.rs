@@ -12,6 +12,15 @@ pub struct WSReConnect<A: ToSocketAddrs> {
     access_token: Option<String>,
 }
 
+impl<A: ToSocketAddrs> WSReConnect<A> {
+    pub fn new(addr: A) -> Self {
+        Self {
+            addr,
+            access_token: None,
+        }
+    }
+}
+
 impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
     type Error = crate::Error;
     type Message = SocketAddr;

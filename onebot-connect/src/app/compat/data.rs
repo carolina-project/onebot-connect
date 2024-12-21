@@ -1,19 +1,22 @@
 use std::{
     fmt::Display,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use onebot_connect_interface::{app::RecvMessage as AppMsg, upload::*};
 use parking_lot::RwLock;
-use serde::{de::Error as DeErr, ser::Error as SerErr, Deserialize, Serialize};
-use serde_value::{DeserializerError, SerializerError, Value};
+use serde::{Deserialize, Serialize};
+use serde_value::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
     common::{storage::OBFileStorage, ConnState},
-    Error as AllErr,
+    ob11, Error as AllErr,
 };
 
 use onebot_types::{
@@ -23,10 +26,12 @@ use onebot_types::{
             CompatAction, FromOB11Resp, IntoOB11Action, IntoOB11ActionAsync, UserInfoResp,
             SUPPORTED_ACTIONS,
         },
+        compat_self,
         event::{IntoOB12Event, IntoOB12EventAsync},
         message::{
             CompatSegment, FileSeg, IntoOB11Seg, IntoOB11SegAsync, IntoOB12Seg, IntoOB12SegAsync,
         },
+        CompatError,
     },
     ob11::{
         action::{self as ob11a},
@@ -43,12 +48,14 @@ use onebot_types::{
 use onebot_connect_interface::{app::OBApp, Error as OCErr, RespArgs};
 
 mod convert {
+    use onebot_types::compat::{CompatError, CompatResult};
+
     use super::*;
 
     pub async fn ob11_to_12_seg_async<P: Send, M>(
         msg: M,
         param: P,
-    ) -> Result<ob12m::MessageSeg, SerializerError>
+    ) -> CompatResult<ob12m::MessageSeg>
     where
         M: IntoOB12SegAsync<P>,
         <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
@@ -56,23 +63,21 @@ mod convert {
         msg.into_ob12(param)
             .await?
             .try_into()
-            .map_err(SerializerError::custom)
+            .map_err(CompatError::other)
     }
 
-    pub fn ob11_to_12_seg_default<M>(msg: M) -> Result<ob12m::MessageSeg, SerializerError>
+    pub fn ob11_to_12_seg_default<M>(msg: M) -> Result<ob12m::MessageSeg, CompatError>
     where
         M: IntoOB12Seg<()>,
         <M::Output as TryInto<ob12m::MessageSeg>>::Error: Display,
     {
-        msg.into_ob12(())?
-            .try_into()
-            .map_err(SerializerError::custom)
+        msg.into_ob12(())?.try_into().map_err(CompatError::other)
     }
 
     pub async fn ob12_to_11_seg_async<M, P: Send>(
         msg: M,
         param: P,
-    ) -> Result<ob11m::MessageSeg, DeserializerError>
+    ) -> Result<ob11m::MessageSeg, CompatError>
     where
         M: IntoOB11SegAsync<P>,
         <M::Output as TryInto<ob11m::MessageSeg>>::Error: Display,
@@ -80,32 +85,29 @@ mod convert {
         msg.into_ob11(param)
             .await?
             .try_into()
-            .map_err(DeErr::custom)
+            .map_err(CompatError::other)
     }
 
-    pub fn ob12_to_11_seg<M>(msg: M) -> Result<ob11m::MessageSeg, DeserializerError>
+    pub fn ob12_to_11_seg<M>(msg: M) -> CompatResult<ob11m::MessageSeg>
     where
         M: IntoOB11Seg,
         <M::Output as TryInto<ob11m::MessageSeg>>::Error: Display,
     {
-        msg.into_ob11()?.try_into().map_err(DeErr::custom)
+        msg.into_ob11()?.try_into().map_err(CompatError::other)
     }
 
-    pub fn convert_action_default<A>(action: A) -> Result<ob11a::ActionType, DeserializerError>
+    pub fn convert_action_default<A>(action: A) -> Result<ob11a::ActionType, CompatError>
     where
         A: IntoOB11Action<()>,
         <A::Output as TryInto<ob11a::ActionType>>::Error: Display,
     {
-        action
-            .into_ob11(())?
-            .try_into()
-            .map_err(DeserializerError::custom)
+        action.into_ob11(())?.try_into().map_err(CompatError::other)
     }
 
     pub async fn convert_action_async<A, P: Send>(
         action: A,
         param: P,
-    ) -> Result<ob11a::ActionType, DeserializerError>
+    ) -> Result<ob11a::ActionType, CompatError>
     where
         A: IntoOB11ActionAsync<P>,
         <A::Output as TryInto<ob11a::ActionType>>::Error: Display,
@@ -114,7 +116,7 @@ mod convert {
             .into_ob11(param)
             .await?
             .try_into()
-            .map_err(DeserializerError::custom)
+            .map_err(CompatError::other)
     }
 }
 
@@ -124,11 +126,28 @@ pub enum ActionConverted {
     Respond(RespArgs),
 }
 
+#[derive(Debug)]
+struct BotStatus {
+    online: bool,
+    good: bool,
+}
+
+impl Default for BotStatus {
+    fn default() -> Self {
+        Self {
+            online: true,
+            good: true,
+        }
+    }
+}
+
 #[derive(Default)]
 struct AppDataInner {
+    #[allow(unused)]
     conn_state: ConnState,
-    bot_state: RwLock<ob12::BotState>,
+    self_id: AtomicI64,
     version_info: RwLock<ob12::VersionInfo>,
+    status: RwLock<BotStatus>,
     storage: OBFileStorage,
 }
 
@@ -145,6 +164,16 @@ fn mk_missing_file() -> Result<ActionConverted, AllErr> {
 }
 
 impl AppData {
+    #[inline]
+    pub fn update_self_id(&self, id: i64) {
+        self.0.self_id.store(id, Ordering::Release)
+    }
+
+    #[inline]
+    pub fn get_self_id(&self) -> i64 {
+        self.0.self_id.load(Ordering::Acquire)
+    }
+
     async fn trace_file(&self, file: FileSeg) -> Result<String, UploadError> {
         match file.url {
             Some(url) => {
@@ -167,7 +196,8 @@ impl AppData {
     async fn ob12_to_ob11_seg(&self, msg: RawMessageSeg) -> Result<RawMessageSeg, OCErr> {
         use convert::{ob12_to_11_seg, ob12_to_11_seg_async};
         let msg: ob12m::MessageSeg = msg.try_into()?;
-        let find = |name: String| async move { self.find_file(&name).await.map_err(DeErr::custom) };
+        let find =
+            |name: String| async move { self.find_file(&name).await.map_err(CompatError::other) };
 
         let ob12seg = match msg {
             ob12m::MessageSeg::Text(text) => ob12_to_11_seg(text)?,
@@ -189,7 +219,7 @@ impl AppData {
             }
         };
 
-        ob12seg.try_into().map_err(OCErr::serialize)
+        ob12seg.try_into().map_err(OCErr::other)
     }
 
     async fn ob11_to_ob12_seg<A: OBApp + 'static>(
@@ -204,7 +234,7 @@ impl AppData {
             self.trace_file(file)
                 .await
                 .map(|r| r.to_string())
-                .map_err(SerializerError::custom)
+                .map_err(CompatError::other)
         };
 
         let ob11msg = match msg {
@@ -226,13 +256,12 @@ impl AppData {
             MessageSeg::Reply(reply) => {
                 use onebot_connect_interface::app::AppExt;
 
-                let self_ = self.0.bot_state.read().self_.clone();
                 let resp = app
                     .call_action(
                         ob11a::GetMsg {
                             message_id: reply.id,
                         },
-                        Some(self_),
+                        Some(compat_self(self.get_self_id().to_string())),
                     )
                     .await?;
                 reply
@@ -254,15 +283,12 @@ impl AppData {
         app: &'a A,
     ) -> Result<ob12e::MessageEvent, OCErr> {
         let msg_convert = |msg| async move {
-            self.ob11_to_ob12_seg(msg, app)
-                .await
-                .map_err(SerErr::custom)
+            self.ob11_to_ob12_seg(msg, app).await.map_err(|e| {
+                CompatError::other(format!("error while converting msg from ob11 to 12: {e}"))
+            })
         };
-        let id = self.0.bot_state.read().self_.user_id.clone();
-        Ok(msg
-            .into_ob12((id, msg_convert))
-            .await
-            .map_err(OCErr::serialize)?)
+        let id = self.get_self_id().to_string();
+        Ok(msg.into_ob12((id, msg_convert)).await?)
     }
 
     async fn convert_meta_event<A: OBApp>(
@@ -278,12 +304,18 @@ impl AppData {
         let (event, update) = meta.into_ob12(&inner.version_info.read())?;
 
         if let Some(status) = update {
-            let good = status.good;
-            let state =
-                ob12::BotState::from_ob11(status, self.0.bot_state.read().self_.user_id.clone())?;
+            let ob11::Status { online, good, .. } = status;
+            let curr = self.0.status.read();
+            if curr.good != status.good || curr.online != online {
+                drop(curr);
+                let curr_status = BotStatus { online, good };
+                *self.0.status.write() = curr_status;
 
-            if state != *inner.bot_state.read() {
-                // if latest bot state is different
+                let state = ob12::BotState {
+                    self_: compat_self(self.get_self_id().to_string()),
+                    online,
+                    extra: Default::default(),
+                };
                 let update = ob12e::meta::StatusUpdate {
                     status: ob12::Status {
                         good,
@@ -309,7 +341,7 @@ impl AppData {
         _app: &A,
     ) -> Result<ob12e::RequestEvent, OCErr> {
         let req: RequestEvent = req.try_into()?;
-        Ok(req.into_ob12(self.0.bot_state.read().self_.user_id.clone())?)
+        Ok(req.into_ob12(self.get_self_id().to_string())?)
     }
 
     async fn convert_notice_event<A: OBApp + 'static>(
@@ -319,9 +351,10 @@ impl AppData {
     ) -> Result<ob12e::Event, OCErr> {
         let notice: NoticeEvent = notice.try_into()?;
 
-        let self_ = self.0.bot_state.read().self_.user_id.clone();
         Ok(notice
-            .into_ob12((self_, |_| async move { Uuid::new_v4().to_string() }))
+            .into_ob12((self.get_self_id().to_string(), |_| async move {
+                Uuid::new_v4().to_string()
+            }))
             .await?)
     }
 
@@ -332,6 +365,7 @@ impl AppData {
         app: &A,
     ) -> Result<ob12e::RawEvent, OCErr> {
         let event_k: EventKind = raw_event.detail.try_into()?;
+
         let time = raw_event.time as f64;
 
         let event: ob12e::EventDetail = match event_k {
@@ -459,17 +493,22 @@ impl AppData {
         let inner = &self.0;
         let detail = match detail {
             ob12a::ActionType::SendMessage(action) => {
-                convert_action_async(
-                    action,
-                    |msg| async move { self.ob12_to_ob11_seg(msg).await },
-                )
+                convert_action_async(action, |msg| async move {
+                    self.ob12_to_ob11_seg(msg).await.map_err(|e| {
+                        OCErr::other(format!("err while converting msg from ob12 to ob11: {e}"))
+                    })
+                })
                 .await?
             }
             ob12a::ActionType::GetStatus(_) => {
-                let state = inner.bot_state.read();
+                let status = self.0.status.read();
                 return mk_response(ob12::Status {
-                    good: inner.conn_state.is_active(),
-                    bots: vec![state.clone()],
+                    good: status.good,
+                    bots: vec![ob12::BotState {
+                        self_: compat_self(self.get_self_id().to_string()),
+                        online: status.online,
+                        extra: Default::default(),
+                    }],
                     extra: Default::default(),
                 });
             }

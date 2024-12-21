@@ -8,10 +8,8 @@ pub mod ws;
 #[cfg(feature = "ws")]
 pub mod ws_re;
 
-use onebot_connect_interface::imp::MessageSource;
-use onebot_connect_interface::imp::{
-    ActionEcho, Command, OBImpl, OBImplProvider, RecvMessage,
-};
+pub use onebot_connect_interface::imp::*;
+
 use onebot_connect_interface::{Error as OCError, RespArgs};
 use onebot_types::ob12::event::RawEvent;
 use tokio::sync::mpsc;
