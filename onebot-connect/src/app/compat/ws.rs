@@ -10,8 +10,9 @@ use onebot_connect_interface::app::{
 use onebot_types::ob11::action::{RawAction, RespData};
 use onebot_types::ob11::RawEvent;
 use onebot_types::ob12::action as ob12a;
+use onebot_types::ValueMap;
+use serde::de::IntoDeserializer;
 use serde::Deserialize;
-use serde_json::Value as Json;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 use tokio_tungstenite::{connect_async, WebSocketStream};
@@ -133,14 +134,16 @@ impl<'de> Deserialize<'de> for RecvData {
         D: serde::Deserializer<'de>,
     {
         use serde::de::Error;
-        let data: serde_json::Map<String, Json> = Deserialize::deserialize(deserializer)?;
+        let data: ValueMap = Deserialize::deserialize(deserializer)?;
         if data.get("echo").is_some() {
             Ok(RecvData::Response(
-                serde_json::from_value(Json::Object(data)).map_err(Error::custom)?,
+                Deserialize::deserialize(data.into_deserializer())
+                    .map_err(serde::de::Error::custom)?,
             ))
         } else if data.get("post_type").is_some() {
             Ok(RecvData::Event(
-                serde_json::from_value(Json::Object(data)).map_err(Error::custom)?,
+                Deserialize::deserialize(data.into_deserializer())
+                    .map_err(serde::de::Error::custom)?,
             ))
         } else {
             Err(Error::custom("unknown data type"))
@@ -230,7 +233,7 @@ impl<R: IntoClientRequest + Unpin> OB11WSConnect<R> {
     }
 }
 
-impl<R: IntoClientRequest + Unpin> Connect for OB11WSConnect<R> {
+impl<R: IntoClientRequest + Unpin + Send> Connect for OB11WSConnect<R> {
     type Error = crate::Error;
     type Message = ();
     type Provider = TxAppProvider;

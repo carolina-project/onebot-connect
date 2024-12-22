@@ -21,7 +21,7 @@ impl<A: ToSocketAddrs> WSReConnect<A> {
     }
 }
 
-impl<A: ToSocketAddrs> Connect for WSReConnect<A> {
+impl<A: ToSocketAddrs + Send> Connect for WSReConnect<A> {
     type Error = crate::Error;
     type Message = SocketAddr;
     type Source = RxMessageSource;

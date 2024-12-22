@@ -180,7 +180,7 @@ impl<R: IntoClientRequest + Unpin> WSConnect<R> {
     }
 }
 
-impl<R: IntoClientRequest + Unpin> Connect for WSConnect<R> {
+impl<R: IntoClientRequest + Unpin + Send> Connect for WSConnect<R> {
     type Error = crate::Error;
     type Message = ();
     type Provider = TxAppProvider;

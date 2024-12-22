@@ -159,7 +159,7 @@ impl<A: Into<SocketAddr>> OB11HttpConnect<A> {
     }
 }
 
-impl<A: Into<SocketAddr>> Connect for OB11HttpConnect<A> {
+impl<A: Into<SocketAddr> + Send> Connect for OB11HttpConnect<A> {
     type Source = RxMessageSource;
     type Error = crate::Error;
     type Message = ();

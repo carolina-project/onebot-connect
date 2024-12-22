@@ -44,15 +44,13 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHa
                 data_tx.send(data.into()).map_err(OCError::closed)?;
                 Ok(())
             }
-            Command::Event(event) => {
-                Ok(data_tx
-                    .send(
-                        serde_json::to_string(&event)
-                            .map_err(OCError::serialize)?
-                            .into(),
-                    )
-                    .map_err(OCError::closed)?)
-            }
+            Command::Event(event) => Ok(data_tx
+                .send(
+                    serde_json::to_string(&event)
+                        .map_err(OCError::serialize)?
+                        .into(),
+                )
+                .map_err(OCError::closed)?),
         }
     }
 }
@@ -98,7 +96,7 @@ impl<R: IntoClientRequest + Unpin> WSReCreate<R> {
 
 impl<R> Create for WSReCreate<R>
 where
-    R: IntoClientRequest + Unpin,
+    R: IntoClientRequest + Unpin + Send,
 {
     type Error = crate::Error;
     type Source = RxMessageSource;

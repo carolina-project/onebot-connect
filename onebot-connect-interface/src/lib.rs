@@ -6,7 +6,7 @@ use onebot_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_value::{DeserializerError, SerializerError, Value};
-use tokio::sync::mpsc::error::SendError;
+use tokio::sync::{broadcast, mpsc::error::SendError};
 
 #[cfg(feature = "app")]
 pub mod app;
@@ -103,6 +103,12 @@ impl From<DeserializerError> for Error {
 
 impl<T> From<SendError<T>> for Error {
     fn from(e: SendError<T>) -> Self {
+        Self::closed(e)
+    }
+}
+
+impl<T> From<broadcast::error::SendError<T>> for Error {
+    fn from(e: broadcast::error::SendError<T>) -> Self {
         Self::closed(e)
     }
 }

@@ -14,12 +14,13 @@ async fn main() -> eyre::Result<()> {
 
     let bridge = OBridge::create(
         OB11HttpConnect::new(([0, 0, 0, 0], 4001), "http://127.0.0.1:4000"),
-        WSCreate::new("0.0.0.0:6001"),
+        || WSCreate::new("0.0.0.0:6001"),
+        32,
     )
     .await
     .map_err(|e| eyre!("{e}"))?;
     log::info!("connection established.");
-    let (a_res, i_res) = bridge.join().await?;
+    let (a_res, i_res) = bridge.join().await;
     a_res?;
     i_res?;
 

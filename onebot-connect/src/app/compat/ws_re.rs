@@ -24,7 +24,7 @@ impl<A: ToSocketAddrs> OB11WSReConnect<A> {
     }
 }
 
-impl<A: ToSocketAddrs> Connect for OB11WSReConnect<A> {
+impl<A: ToSocketAddrs + Send> Connect for OB11WSReConnect<A> {
     type Error = crate::Error;
     type Message = SocketAddr;
     type Provider = TxAppProvider;

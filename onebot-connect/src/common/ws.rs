@@ -157,6 +157,10 @@ where
                     });
                 },
                 Some(msg) = recv_rx.recv() => {
+                    if let tungstenite::Message::Close(_) = msg {
+                        state.set_active(false);
+                        break
+                    }
                     let handler = handler.clone();
                     let msg_tx = msg_tx.clone();
                     log::trace!("recv: {}", msg);
@@ -195,6 +199,7 @@ where
         if let Err(e) = handler.handle_close(res.clone(), msg_tx).await {
             log::error!("error occurred while handling conn close: {}", e);
         }
+        log::debug!("ws manager task stopped.");
         res.map_err(AllErr::other)
     }
 
@@ -213,6 +218,7 @@ where
                     match signal {
                         Signal::Close(callback) => {
                             callback.send(Ok(())).map_err(|_| AllErr::ChannelClosed)?;
+                            log::debug!("websocket sender closed.");
                             break Ok(());
                         }
                     }
@@ -220,6 +226,7 @@ where
                 Some(data) = send_rx.recv() => {
                     sink.send(data).await?;
                 }
+                else => break Err(AllErr::ChannelClosed)
             }
         }
     }
@@ -239,6 +246,7 @@ where
                     match signal {
                         Signal::Close(sender) => {
                             sender.send(Ok(())).map_err(|_| AllErr::ChannelClosed)?;
+                            log::debug!("websocket recv closed.");
                             break Ok(());
                         }
                     }

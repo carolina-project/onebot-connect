@@ -27,7 +27,7 @@ impl<A: ToSocketAddrs> WSCreate<A> {
     }
 }
 
-impl<A: ToSocketAddrs> Create for WSCreate<A> {
+impl<A: ToSocketAddrs + Send> Create for WSCreate<A> {
     type Error = crate::Error;
     type Message = SocketAddr;
     type Source = RxMessageSource;

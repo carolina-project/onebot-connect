@@ -5,6 +5,8 @@ pub mod http_s;
 #[allow(unused)]
 pub mod ws;
 
+pub mod util;
+
 #[cfg(feature = "storage")]
 pub mod storage;
 

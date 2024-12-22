@@ -108,7 +108,8 @@ mod recv {
 
         fn connect(
             self,
-        ) -> impl Future<Output = Result<(Self::Source, Self::Provider, Self::Message), Self::Error>>;
+        ) -> impl Future<Output = Result<(Self::Source, Self::Provider, Self::Message), Self::Error>>
+               + Send;
 
         fn with_authorization(self, access_token: impl Into<String>) -> Self;
     }
