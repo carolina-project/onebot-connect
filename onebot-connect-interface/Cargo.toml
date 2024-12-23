@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1" }
 serde-value = { version = "0.7" }
-onebot-types = { path = "../../onebot-types" }
+onebot-types = { git = "https://github.com/carolina-project/onebot-types.git" }
 thiserror = { version = "2" }
 tokio = { version = "1", optional = true, features = ["sync"]}
 bytes = { version = "1", optional = true}

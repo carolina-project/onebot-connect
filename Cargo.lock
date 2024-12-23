@@ -1084,6 +1084,7 @@ dependencies = [
 [[package]]
 name = "ob-types-macro"
 version = "0.1.0"
+source = "git+https://github.com/carolina-project/onebot-types.git#c3b2a29074bd5f9dd8a7b78206c41b765ba15c97"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1152,6 +1153,7 @@ dependencies = [
 [[package]]
 name = "onebot-types"
 version = "0.1.0"
+source = "git+https://github.com/carolina-project/onebot-types.git#c3b2a29074bd5f9dd8a7b78206c41b765ba15c97"
 dependencies = [
  "base64",
  "ob-types-macro",
