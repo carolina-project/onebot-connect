@@ -1,12 +1,11 @@
 use std::fmt::{Debug, Display};
 
-use onebot_types::{
-    compat::CompatError,
-    ob12::action::{RespData, RespError, RespStatus, RetCode},
-};
+use onebot_types::ob12::action::{RespData, RespError, RespStatus, RetCode};
 use serde::{Deserialize, Serialize};
 use serde_value::{DeserializerError, SerializerError, Value};
-use tokio::sync::{broadcast, mpsc::error::SendError};
+
+pub use onebot_types as types;
+pub use serde_value as value;
 
 #[cfg(feature = "app")]
 pub mod app;
@@ -29,7 +28,7 @@ pub enum ClosedReason {
 pub enum Error {
     #[cfg(feature = "compat")]
     #[error(transparent)]
-    Compat(#[from] CompatError),
+    Compat(#[from] onebot_types::compat::CompatError),
     #[error(transparent)]
     Resp(#[from] RespError),
     #[error("serialize error: {0}")]
@@ -101,15 +100,20 @@ impl From<DeserializerError> for Error {
     }
 }
 
-impl<T> From<SendError<T>> for Error {
-    fn from(e: SendError<T>) -> Self {
-        Self::closed(e)
-    }
-}
+#[doc(hidden)]
+#[cfg(feature = "tokio")]
+mod tokio_impl {
+    use super::*;
 
-impl<T> From<broadcast::error::SendError<T>> for Error {
-    fn from(e: broadcast::error::SendError<T>) -> Self {
-        Self::closed(e)
+    impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
+        fn from(e: tokio::sync::mpsc::error::SendError<T>) -> Self {
+            Self::closed(e)
+        }
+    }
+    impl<T> From<tokio::sync::broadcast::error::SendError<T>> for Error {
+        fn from(e: tokio::sync::broadcast::error::SendError<T>) -> Self {
+            Self::closed(e)
+        }
     }
 }
 

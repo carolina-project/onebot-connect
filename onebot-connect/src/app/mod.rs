@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use dashmap::DashMap;
 use onebot_connect_interface::Error as OCError;
 use onebot_types::ob12::action::{ActionDetail, RespData};
@@ -101,27 +103,33 @@ impl OBApp for TxAppSide {
         rx.await.map_err(OCError::closed)?.map(|r| Some(r))
     }
 
-    async fn get_config<'a, 'b: 'a>(
-        &'a self,
-        key: impl Into<String> + Send + 'b,
-    ) -> Result<Option<serde_value::Value>, OCError> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Command::GetConfig(key.into(), tx))
-            .map_err(OCError::closed)?;
+    fn get_config(
+        &self,
+        key: impl AsRef<str>,
+    ) -> impl Future<Output = Result<Option<serde_value::Value>, OCError>> + Send + '_ {
+        let key = key.as_ref().to_owned();
+        async move {
+            let (tx, rx) = oneshot::channel();
+            self.tx
+                .send(Command::GetConfig(key, tx))
+                .map_err(OCError::closed)?;
 
-        rx.await.map_err(OCError::closed)
+            rx.await.map_err(OCError::closed)
+        }
     }
 
-    async fn set_config<'a, 'b: 'a>(
-        &'a self,
-        key: impl Into<String> + Send + 'b,
+    fn set_config(
+        &self,
+        key: impl AsRef<str>,
         value: serde_value::Value,
-    ) -> Result<(), OCError> {
-        let (tx, rx) = oneshot::channel();
-        let entry = (key.into(), value);
-        self.tx.send(Command::SetConfig(entry, tx))?;
-        Ok(rx.await.map_err(OCError::closed)??)
+    ) -> impl Future<Output = Result<(), OCError>> + Send + '_ {
+        let key = key.as_ref().into();
+        async move {
+            let (tx, rx) = oneshot::channel();
+            let entry = (key, value);
+            self.tx.send(Command::SetConfig(entry, tx))?;
+            Ok(rx.await.map_err(OCError::closed)??)
+        }
     }
 
     async fn close(&self) -> Result<(), OCError> {
