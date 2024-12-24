@@ -277,7 +277,7 @@ impl AppData {
         ob11msg.try_into().map_err(OCErr::serialize)
     }
 
-    async fn convert_msg_event<'a, A: OBApp + 'static>(
+    async fn convert_msg_event<'a, A: OBApp + Sync + 'static>(
         &'a self,
         msg: MessageEvent,
         app: &'a A,
@@ -358,7 +358,7 @@ impl AppData {
             .await?)
     }
 
-    pub async fn convert_event<A: OBApp + 'static>(
+    pub async fn convert_event<A: OBApp + Sync + 'static>(
         &self,
         raw_event: RawEvent,
         cmd_tx: &mpsc::UnboundedSender<AppMsg>,

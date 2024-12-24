@@ -1,4 +1,4 @@
-use std::{future::Future, ops::Deref, pin::Pin, sync::Arc};
+use std::{future::Future, ops::Deref, pin::Pin};
 
 use crate::ConfigError;
 
@@ -121,7 +121,7 @@ use serde::Deserialize;
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
-pub trait OBApp: Send + Sync {
+pub trait OBApp: Send {
     /// Checks if the client supports action response.
     /// For example, WebSocket and Http supports response, WebHook doesn't.
     fn response_supported(&self) -> bool {
@@ -171,7 +171,7 @@ pub trait OBApp: Send + Sync {
 }
 
 /// Extension trait for `App` to provide dynamic dispatching capabilities
-pub trait AppDyn: Send + Sync {
+pub trait AppDyn: Send {
     fn response_supported(&self) -> bool {
         true
     }
@@ -243,45 +243,51 @@ impl<T: OBApp + 'static> AppDyn for T {
     }
 }
 
-impl OBApp for Arc<dyn AppDyn> {
-    fn response_supported(&self) -> bool {
-        self.deref().response_supported()
-    }
+macro_rules! deref_impl {
+    ($ty:ty) => {
+        impl OBApp for $ty {
+            fn response_supported(&self) -> bool {
+                self.deref().response_supported()
+            }
 
-    fn send_action_impl(
-        &self,
-        action: ActionDetail,
-        self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<RespData>, Error>> + Send + '_ {
-        self.send_action_dyn(action, self_)
-    }
+            fn send_action_impl(
+                &self,
+                action: ActionDetail,
+                self_: Option<BotSelf>,
+            ) -> impl Future<Output = Result<Option<RespData>, Error>> + Send + '_ {
+                self.send_action_dyn(action, self_)
+            }
 
-    fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        self.deref().close()
-    }
+            fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+                self.deref().close()
+            }
 
-    fn clone_app(&self) -> Self
-    where
-        Self: 'static,
-    {
-        self.deref().clone_app().into()
-    }
+            fn clone_app(&self) -> Self
+            where
+                Self: 'static,
+            {
+                self.deref().clone_app().into()
+            }
 
-    fn get_config(
-        &self,
-        key: impl AsRef<str>,
-    ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_ {
-        self.deref().get_config(key.as_ref().to_owned())
-    }
+            fn get_config(
+                &self,
+                key: impl AsRef<str>,
+            ) -> impl Future<Output = Result<Option<Value>, Error>> + Send + '_ {
+                self.deref().get_config(key.as_ref().to_owned())
+            }
 
-    fn set_config(
-        &self,
-        key: impl AsRef<str>,
-        value: Value,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
-        self.deref().set_config(key.as_ref().to_owned(), value)
-    }
+            fn set_config(
+                &self,
+                key: impl AsRef<str>,
+                value: Value,
+            ) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+                self.deref().set_config(key.as_ref().to_owned(), value)
+            }
+        }
+    };
 }
+
+deref_impl!(Box<dyn AppDyn>);
 
 #[inline]
 fn process_resp<R>(resp: Option<R>) -> Result<R, Error> {
@@ -311,9 +317,9 @@ pub trait AppExt {
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
         A: OBAction + Send + 'static,
-        Self: Sync,
     {
-        async move { self.send_action(action, self_).await.map(|_| ()) }
+        let fut = self.send_action(action, self_);
+        async move { fut.await.map(|_| ()) }
     }
 
     /// Send an action, treating unresponsive as an error.
@@ -324,13 +330,9 @@ pub trait AppExt {
     ) -> impl Future<Output = Result<A::Resp, Error>> + Send + '_
     where
         A: OBAction + Send + 'static,
-        Self: Sync,
     {
-        async move {
-            self.send_action::<A>(action, self_)
-                .await?
-                .ok_or_else(|| Error::missing("response"))
-        }
+        let fut = self.send_action(action, self_);
+        async move { fut.await?.ok_or_else(|| Error::missing("response")) }
     }
 
     fn get_latest_events(
@@ -338,20 +340,14 @@ pub trait AppExt {
         limit: i64,
         timeout: i64,
         self_: Option<BotSelf>,
-    ) -> impl std::future::Future<Output = Result<Vec<RawEvent>, Error>> + Send + '_
-    where
-        Self: Sync,
-    {
-        async move {
-            let action = GetLatestEvents {
-                limit,
-                timeout,
-                extra: Default::default(),
-            };
-
-            let response = self.send_action(action, self_).await?;
-            process_resp(response)
-        }
+    ) -> impl std::future::Future<Output = Result<Vec<RawEvent>, Error>> + Send + '_ {
+        let action = GetLatestEvents {
+            limit,
+            timeout,
+            extra: Default::default(),
+        };
+        let fut = self.send_action(action, self_);
+        async move { process_resp(fut.await?) }
     }
 
     fn send_message(
@@ -359,25 +355,19 @@ pub trait AppExt {
         target: ChatTarget,
         message: MessageChain,
         self_: Option<BotSelf>,
-    ) -> impl std::future::Future<Output = Result<SendMessageResp, Error>> + Send
-    where
-        Self: Sync,
-    {
-        async {
-            self.call_action(
-                SendMessage {
-                    target,
-                    message,
-                    extra: Default::default(),
-                },
-                self_,
-            )
-            .await
-        }
+    ) -> impl std::future::Future<Output = Result<SendMessageResp, Error>> + Send {
+        self.call_action(
+            SendMessage {
+                target,
+                message,
+                extra: Default::default(),
+            },
+            self_,
+        )
     }
 }
 
-impl<T: OBApp + Sync> AppExt for T {
+impl<T: OBApp> AppExt for T {
     fn send_action<A>(
         &self,
         action: A,
@@ -386,17 +376,20 @@ impl<T: OBApp + Sync> AppExt for T {
     where
         A: OBAction + Send + 'static,
     {
-        async move {
-            let resp = self
-                .send_action_impl(
+        let action_name = action.action_name().to_owned();
+        let value_res = serde_value::to_value(action)
+            .and_then(|r| ValueMap::deserialize(r).map_err(serde::ser::Error::custom))
+            .map(move |r| {
+                self.send_action_impl(
                     ActionDetail {
-                        action: action.action_name().into(),
-                        params: ValueMap::deserialize(serde_value::to_value(action)?)?,
+                        action: action_name,
+                        params: r,
                     },
                     self_,
                 )
-                .await?;
-            if let Some(resp) = resp {
+            });
+        async move {
+            if let Some(resp) = value_res?.await? {
                 if resp.is_success() {
                     Ok(Some(<A::Resp as Deserialize>::deserialize(resp.data)?))
                 } else {
@@ -409,7 +402,7 @@ impl<T: OBApp + Sync> AppExt for T {
     }
 }
 
-impl AppExt for dyn AppDyn + Sync {
+impl AppExt for dyn AppDyn {
     fn send_action<A>(
         &self,
         action: A,
@@ -418,17 +411,20 @@ impl AppExt for dyn AppDyn + Sync {
     where
         A: OBAction + Send + 'static,
     {
-        async move {
-            let resp = self
-                .send_action_dyn(
+        let action_name = action.action_name().to_owned();
+        let value_res = serde_value::to_value(action)
+            .and_then(|r| ValueMap::deserialize(r).map_err(serde::ser::Error::custom))
+            .map(move |r| {
+                self.send_action_dyn(
                     ActionDetail {
-                        action: action.action_name().into(),
-                        params: ValueMap::deserialize(serde_value::to_value(action)?)?,
+                        action: action_name,
+                        params: r,
                     },
                     self_,
                 )
-                .await?;
-            if let Some(resp) = resp {
+            });
+        async move {
+            if let Some(resp) = value_res?.await? {
                 if resp.is_success() {
                     Ok(Some(<A::Resp as Deserialize>::deserialize(resp.data)?))
                 } else {
