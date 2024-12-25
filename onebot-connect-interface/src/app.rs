@@ -17,7 +17,7 @@ use onebot_types::{
 
 #[cfg(feature = "app_recv")]
 mod recv {
-    use std::{error, fmt::Debug};
+    use std::{error, fmt::Debug, ops::DerefMut};
 
     use onebot_types::ob12::{action::ActionDetail, event::RawEvent};
     use tokio::sync::oneshot;
@@ -65,10 +65,16 @@ mod recv {
         fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
-    pub trait MessageSourceDyn: Send {
+    pub trait MessageSourceDyn: Send + 'static {
         fn poll_message(
             &mut self,
         ) -> Pin<Box<dyn Future<Output = Option<RecvMessage>> + Send + '_>>;
+    }
+
+    impl MessageSource for Box<dyn MessageSourceDyn> {
+        fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_ {
+            self.deref_mut().poll_message()
+        }
     }
 
     impl<T: MessageSource> MessageSourceDyn for T {
@@ -93,6 +99,36 @@ mod recv {
 
         /// Provides a OneBot app instance.
         fn provide(&mut self) -> Result<Self::Output, Error>;
+    }
+
+    pub trait AppProviderDyn: Send + 'static {
+        fn use_event_context(&self) -> bool;
+
+        fn set_event_context(&mut self, event: &RawEvent);
+
+        fn provide(&mut self) -> Result<Box<dyn AppDyn>, Error>;
+    }
+
+    impl<T: OBAppProvider> AppProviderDyn for T {
+        fn use_event_context(&self) -> bool {
+            self.use_event_context()
+        }
+
+        fn set_event_context(&mut self, event: &RawEvent) {
+            self.set_event_context(event)
+        }
+
+        fn provide(&mut self) -> Result<Box<dyn AppDyn>, Error> {
+            Ok(Box::new(self.provide()?))
+        }
+    }
+
+    impl OBAppProvider for Box<dyn AppProviderDyn> {
+        type Output = Box<dyn AppDyn>;
+
+        fn provide(&mut self) -> Result<Self::Output, Error> {
+            self.deref_mut().provide()
+        }
     }
 
     /// Trait to define the connection behavior
@@ -121,7 +157,7 @@ use serde::Deserialize;
 use serde_value::Value;
 
 /// Application client, providing functions to interact with connection
-pub trait OBApp: Send {
+pub trait OBApp: Send + Sync {
     /// Checks if the client supports action response.
     /// For example, WebSocket and Http supports response, WebHook doesn't.
     fn response_supported(&self) -> bool {
@@ -171,7 +207,7 @@ pub trait OBApp: Send {
 }
 
 /// Extension trait for `App` to provide dynamic dispatching capabilities
-pub trait AppDyn: Send {
+pub trait AppDyn: Send + Sync {
     fn response_supported(&self) -> bool {
         true
     }

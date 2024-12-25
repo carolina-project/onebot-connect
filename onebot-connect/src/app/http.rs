@@ -181,6 +181,6 @@ impl Connect for HttpConnect {
             .default_headers(headers)
             .build()?;
         let mut provider = HttpAppProvider::new(http, self.url);
-        Ok((HttpMessageSource::new(provider.provide()?), provider, ()))
+        Ok((HttpMessageSource::new(OBAppProvider::provide(&mut provider)?), provider, ()))
     }
 }
