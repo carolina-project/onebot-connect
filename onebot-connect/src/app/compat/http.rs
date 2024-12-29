@@ -1,6 +1,11 @@
 use onebot_connect_interface::app::OBApp;
 use onebot_connect_interface::Error as OCErr;
-use std::{future::Future, net::SocketAddr, ops::Deref, sync::Arc};
+use std::{
+    future::Future,
+    net::SocketAddr,
+    ops::Deref,
+    sync::{Arc, RwLock},
+};
 
 use super::*;
 use crate::{
@@ -24,7 +29,6 @@ use onebot_types::{
         action::{self as ob12a, RespData, RespError, RetCode},
     },
 };
-use parking_lot::RwLock;
 use sha1::Sha1;
 use tokio::sync::{
     mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -79,7 +83,7 @@ where
                 .to_bytes())
         };
 
-        let body = if self.conf.read().secret.is_some() {
+        let body = if self.conf.read().unwrap().secret.is_some() {
             // check signature
             let sig = req
                 .headers()
@@ -90,12 +94,19 @@ where
                 .to_owned();
 
             type HmacSha1 = Hmac<Sha1>;
-            let mut hash =
-                HmacSha1::new_from_slice(self.conf.read().secret.as_ref().unwrap().as_bytes())
-                    .map_err(|e| {
-                        log::error!("hmac err: {:?}", e);
-                        mk_resp(StatusCode::INTERNAL_SERVER_ERROR, None::<String>)
-                    })?;
+            let mut hash = HmacSha1::new_from_slice(
+                self.conf
+                    .read()
+                    .unwrap()
+                    .secret
+                    .as_ref()
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .map_err(|e| {
+                log::error!("hmac err: {:?}", e);
+                mk_resp(StatusCode::INTERNAL_SERVER_ERROR, None::<String>)
+            })?;
 
             let body = read_body(req).await?;
             hash.update(&body);
@@ -117,17 +128,17 @@ where
 }
 
 pub struct OB11HttpConnect<A: Into<SocketAddr>> {
-    self_addr: A,
-    impl_url: String,
+    post_addr: A,
+    http_url: String,
     secret: Option<String>,
     auth: Option<String>,
 }
 
 impl<A: Into<SocketAddr>> OB11HttpConnect<A> {
-    pub fn new(self_addr: A, impl_url: impl Into<String>) -> Self {
+    pub fn new(post_addr: A, http_url: impl Into<String>) -> Self {
         Self {
-            self_addr,
-            impl_url: impl_url.into(),
+            post_addr,
+            http_url: http_url.into(),
             secret: None,
             auth: None,
         }
@@ -171,7 +182,7 @@ impl<A: Into<SocketAddr> + Send> Connect for OB11HttpConnect<A> {
         };
         let data = AppData::default();
         let mut app_provider = HttpAppProvider::new(
-            self.impl_url,
+            self.http_url,
             self.auth
                 .map(|r| HeaderValue::from_str(&format!("Bearer {}", r)))
                 .transpose()?,
@@ -185,7 +196,7 @@ impl<A: Into<SocketAddr> + Send> Connect for OB11HttpConnect<A> {
             .into(),
         };
         let (_cmd_tx, msg_rx) = HttpServerTask::create(
-            self.self_addr,
+            self.post_addr,
             handler,
             OB11HttpProc {
                 conf: RwLock::new(conf).into(),

@@ -14,7 +14,6 @@ thiserror = "2"
 rand = "0.8"
 fxhash = "0.2"
 uuid =  { version = "1", features = ["fast-rng", "v4"], optional = true }
-parking_lot = { version = "0.12", features = [] }
 dashmap = "6"
 bytes =  { version = "1" }
 http = { version = "1" }

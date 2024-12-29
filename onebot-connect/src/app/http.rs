@@ -46,7 +46,7 @@ impl MessageSource for HttpMessageSource {
                 .await
             {
                 Ok(mut resp) => {
-                    if resp.len() > 0 {
+                    if !resp.is_empty() {
                         let first = resp.remove(0);
                         self.events.extend(resp);
                         return Some(RecvMessage::Event(first));
@@ -93,11 +93,11 @@ impl OBApp for HttpApp {
             .await
             .map_err(OCError::other)?;
         if !http_resp.status().is_success() {
-            return Err(OCError::Resp(RespError {
+            Err(OCError::Resp(RespError {
                 retcode: http_resp.status().as_u16().into(),
                 message: "".into(),
                 echo: None,
-            }));
+            }))
         } else {
             let response = http_resp.json::<RespData>().await.map_err(OCError::other)?;
 
@@ -181,6 +181,10 @@ impl Connect for HttpConnect {
             .default_headers(headers)
             .build()?;
         let mut provider = HttpAppProvider::new(http, self.url);
-        Ok((HttpMessageSource::new(OBAppProvider::provide(&mut provider)?), provider, ()))
+        Ok((
+            HttpMessageSource::new(OBAppProvider::provide(&mut provider)?),
+            provider,
+            (),
+        ))
     }
 }

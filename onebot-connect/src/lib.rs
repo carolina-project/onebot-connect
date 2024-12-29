@@ -92,7 +92,7 @@ impl From<onebot_connect_interface::upload::UploadError> for Error {
 #[cfg(feature = "compat")]
 impl From<onebot_types::compat::CompatError> for Error {
     fn from(err: onebot_types::compat::CompatError) -> Self {
-        Self::OneBotConnect(err.into()).into()
+        Self::OneBotConnect(err.into())
     }
 }
 

@@ -10,8 +10,10 @@ use onebot_types::ob12::{
     action::{ActionDetail, RawAction, RespData},
     event::RawEvent,
 };
-use parking_lot::Mutex;
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 type EventResponder = oneshot::Sender<HttpResponse<Vec<RawAction>>>;
 
@@ -29,7 +31,7 @@ impl CmdHandler<Command> for WHandler {
     ) -> Result<(), crate::Error> {
         match cmd {
             Command::Action(_, tx) => tx
-                .send(Err(OCError::not_supported("send action actively").into()))
+                .send(Err(OCError::not_supported("send action actively")))
                 .map_err(|_| AllErr::ChannelClosed),
             Command::Respond(id, actions) => {
                 if let Some((_, tx)) = self.actions_map.remove(&id) {
@@ -161,7 +163,11 @@ impl OBApp for WebhookApp {
         action: ActionDetail,
         self_: Option<onebot_types::ob12::BotSelf>,
     ) -> Result<Option<RespData>, OCError> {
-        self.inner.actions.lock().push(ActionArgs { action, self_ });
+        self.inner
+            .actions
+            .lock()
+            .unwrap()
+            .push(ActionArgs { action, self_ });
         Ok(None)
     }
 
@@ -178,7 +184,7 @@ impl OBApp for WebhookApp {
 
     async fn release(&mut self) -> Result<(), OCError> {
         if self.is_owner {
-            let actions = std::mem::take(&mut *self.inner.actions.lock());
+            let actions = std::mem::take(&mut *self.inner.actions.lock().unwrap());
             self.inner
                 .cmd_tx
                 .send(Command::Respond(self.inner.event_id.clone(), actions))

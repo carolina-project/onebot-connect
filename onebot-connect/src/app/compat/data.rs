@@ -2,13 +2,12 @@ use std::{
     fmt::Display,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use onebot_connect_interface::{app::RecvMessage as AppMsg, upload::*};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_value::Value;
 use tokio::sync::mpsc;
@@ -301,15 +300,15 @@ impl AppData {
         let inner = &self.0;
         let meta: MetaEvent = meta.try_into()?;
 
-        let (event, update) = meta.into_ob12(&inner.version_info.read())?;
+        let (event, update) = meta.into_ob12(&inner.version_info.read().unwrap())?;
 
         if let Some(status) = update {
             let ob11::Status { online, good, .. } = status;
-            let curr = self.0.status.read();
+            let curr = self.0.status.read().unwrap();
             if curr.good != status.good || curr.online != online {
                 drop(curr);
                 let curr_status = BotStatus { online, good };
-                *self.0.status.write() = curr_status;
+                *self.0.status.write().unwrap() = curr_status;
 
                 let state = ob12::BotState {
                     self_: compat_self(self.get_self_id().to_string()),
@@ -501,7 +500,7 @@ impl AppData {
                 .await?
             }
             ob12a::ActionType::GetStatus(_) => {
-                let status = self.0.status.read();
+                let status = self.0.status.read().unwrap();
                 return mk_response(ob12::Status {
                     good: status.good,
                     bots: vec![ob12::BotState {

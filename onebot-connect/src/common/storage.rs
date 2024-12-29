@@ -10,7 +10,9 @@ use dashmap::mapref::one::{Ref as MapRef, RefMut as MapRefMut};
 use dashmap::DashMap;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use onebot_connect_interface::upload::*;
-use onebot_types::ob12::action::{GetFileFrag, GetFileFragmented, GetFileReq, UploadData, UploadFileReq};
+use onebot_types::ob12::action::{
+    GetFileFrag, GetFileFragmented, GetFileReq, UploadData, UploadFileReq,
+};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -94,6 +96,7 @@ impl FS for LocalFs {
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)
             .await?;
 
@@ -119,7 +122,7 @@ impl FS for LocalFs {
 
     async fn read_to_end(&self, path: impl AsRef<Path>, offset: u64) -> Result<Vec<u8>, FsError> {
         let mut file = tokio::fs::File::open(path).await?;
-        file.seek(std::io::SeekFrom::Start(offset as u64)).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
 
         let mut buf = vec![];
         file.read_to_end(&mut buf).await?;
@@ -165,7 +168,7 @@ impl<F: FS + Default> Default for OBFileStorage<F> {
 fn hashmap_to_headers(map: &HashMap<String, String>) -> Result<HeaderMap, http::Error> {
     let mut header_map = HeaderMap::new();
     for (name, value) in map {
-        header_map.insert(HeaderName::from_str(&name)?, HeaderValue::from_str(&value)?);
+        header_map.insert(HeaderName::from_str(name)?, HeaderValue::from_str(value)?);
     }
 
     Ok(header_map)
@@ -179,10 +182,9 @@ impl<F: FS> OBFileStorage<F> {
     ) -> Result<(), UploadError> {
         let mut req = self.http.get(&url.url);
         if let Some(headers) = &url.headers {
-            req = req.headers(hashmap_to_headers(&headers).map_err(UploadError::other)?);
+            req = req.headers(hashmap_to_headers(headers).map_err(UploadError::other)?);
         }
-        Ok(self
-            .fs
+        self.fs
             .write(
                 path,
                 0,
@@ -194,7 +196,7 @@ impl<F: FS> OBFileStorage<F> {
                     .map_err(UploadError::other)?,
             )
             .await
-            .map_err(UploadError::other)?)
+            .map_err(UploadError::other)
     }
 
     #[inline]
@@ -205,7 +207,7 @@ impl<F: FS> OBFileStorage<F> {
             None => format!("{}/{id}.upload", self.upd_path_base).into(),
         };
 
-        full_path.into()
+        full_path
     }
 
     #[inline]

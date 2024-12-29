@@ -1,5 +1,9 @@
 use std::{
-    collections::VecDeque, future::Future, net::SocketAddr, ops::Deref, sync::Arc, time::Duration,
+    collections::VecDeque,
+    net::SocketAddr,
+    ops::Deref,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -14,7 +18,6 @@ use onebot_types::{
     },
     OBAction,
 };
-use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
 use serde::{de::IntoDeserializer, Deserialize};
 use tokio::sync::oneshot;
@@ -121,7 +124,7 @@ impl RecvHandler<ActionRecv, RecvMessage> for HttpHandler {
 
         self.resp_map.insert(echo.clone(), resp_tx);
 
-        if &detail.action == GetLatestEvents::ACTION.unwrap() {
+        if detail.action == GetLatestEvents::ACTION.unwrap() {
             let params = GetLatestEvents::deserialize(detail.params.into_deserializer())?;
             let events = self
                 .impl_
@@ -231,47 +234,36 @@ impl HttpImpl {
         }
     }
 
-    pub fn get_events(
-        &self,
-        limit: usize,
-        timeout: Duration,
-    ) -> impl Future<Output = Arc<VecDeque<RawEvent>>> + Send + '_ {
-        async move {
-            {
-                let mut queue = self.queue.lock();
-                if queue.len() > 0 {
-                    return if limit == 0 {
-                        let events = std::mem::take(&mut *queue);
-                        events.into()
-                    } else {
-                        Arc::new(queue.drain(..limit).collect())
-                    };
-                }
+    pub async fn get_events(&self, limit: usize, timeout: Duration) -> Arc<VecDeque<RawEvent>> {
+        {
+            let mut queue = self.queue.lock().unwrap();
+            if queue.len() > 0 {
+                return if limit == 0 {
+                    let events = std::mem::take(&mut *queue);
+                    events.into()
+                } else {
+                    Arc::new(queue.drain(..limit).collect())
+                };
             }
+        }
 
-            let (tx, rx) = oneshot::channel();
-            self.waiting_queue.lock().push(tx);
-            tokio::select! {
-                _ = tokio::time::sleep(timeout) => {
-                    Default::default()
-                },
-                event = rx => {
-                    event.unwrap()
-                }
+        let (tx, rx) = oneshot::channel();
+        self.waiting_queue.lock().unwrap().push(tx);
+        tokio::select! {
+            _ = tokio::time::sleep(timeout) => {
+                Default::default()
+            },
+            event = rx => {
+                event.unwrap()
             }
         }
     }
 }
 
 impl OBImpl for HttpImpl {
-    fn send_event_impl(
-        &self,
-        event: RawEvent,
-    ) -> impl std::future::Future<Output = Result<(), OCError>> + Send + '_ {
-        async move {
-            self.queue.lock().push_back(event);
-            Ok(())
-        }
+    async fn send_event_impl(&self, event: RawEvent) -> Result<(), OCError> {
+        self.queue.lock().unwrap().push_back(event);
+        Ok(())
     }
 
     async fn respond_impl(&self, echo: ActionEcho, data: RespArgs) -> Result<(), OCError> {

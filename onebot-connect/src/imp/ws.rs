@@ -39,7 +39,7 @@ impl<A: ToSocketAddrs + Send> Create for WSCreate<A> {
         let (ws, addr) = wait_for_ws(addr, access_token.as_deref()).await?;
         log::debug!("connected ({addr})");
 
-        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler::default()).await;
+        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler).await;
         Ok((
             RxMessageSource::new(msg_rx),
             TxImplProvider::new(cmd_tx),

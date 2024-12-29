@@ -135,12 +135,12 @@ impl<'de> Deserialize<'de> for RecvData {
     {
         use serde::de::Error;
         let data: ValueMap = Deserialize::deserialize(deserializer)?;
-        if data.get("echo").is_some() {
+        if data.contains_key("echo") {
             Ok(RecvData::Response(
                 Deserialize::deserialize(data.into_deserializer())
                     .map_err(serde::de::Error::custom)?,
             ))
-        } else if data.get("post_type").is_some() {
+        } else if data.contains_key("post_type") {
             Ok(RecvData::Event(
                 Deserialize::deserialize(data.into_deserializer())
                     .map_err(serde::de::Error::custom)?,

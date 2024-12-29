@@ -13,7 +13,7 @@ use crate::common::{ws::WSTask, CloseHandler, CmdHandler, RecvHandler};
 use super::*;
 use crate::Error as AllErr;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct WSHandler;
 
 impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHandler {
@@ -113,7 +113,7 @@ where
             );
         }
         let (ws, _) = connect_async(req).await?;
-        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler::default()).await;
+        let (cmd_tx, msg_rx) = WSTask::create(ws, WSHandler).await;
         Ok((
             RxMessageSource::new(msg_rx),
             TxImplProvider::new(cmd_tx),

@@ -4,13 +4,12 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     task::{Context, Poll},
 };
 
 use futures_util::task::AtomicWaker;
-use parking_lot::RwLock;
 
 struct LossyInner<T> {
     buf: RwLock<VecDeque<T>>,
@@ -37,7 +36,7 @@ impl<T> LossySender<T> {
             return Err(item);
         }
 
-        let mut buf = self.inner.buf.write();
+        let mut buf = self.inner.buf.write().unwrap();
         if buf.len() == self.inner.buf_size {
             buf.pop_front();
         }
@@ -62,8 +61,8 @@ impl<T> Future for LossyRxFut<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.inner.tx_count.load(Ordering::Acquire) == 0 {
             Poll::Ready(None)
-        } else if self.inner.buf.read().len() > 0 {
-            Poll::Ready(self.inner.buf.write().pop_front())
+        } else if self.inner.buf.read().unwrap().len() > 0 {
+            Poll::Ready(self.inner.buf.write().unwrap().pop_front())
         } else {
             self.inner.rx_waker.register(cx.waker());
             Poll::Pending

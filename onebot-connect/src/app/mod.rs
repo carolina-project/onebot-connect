@@ -100,7 +100,7 @@ impl OBApp for TxAppSide {
         self.tx
             .send(Command::Action(ActionArgs { action, self_ }, tx))
             .map_err(OCError::closed)?;
-        rx.await.map_err(OCError::closed)?.map(|r| Some(r))
+        rx.await.map_err(OCError::closed)?.map(Some)
     }
 
     fn get_config(

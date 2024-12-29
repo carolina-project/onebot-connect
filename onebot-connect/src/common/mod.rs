@@ -5,6 +5,7 @@ pub mod http_s;
 #[allow(unused)]
 pub mod ws;
 
+#[cfg(feature = "bridge")]
 pub mod util;
 
 #[cfg(feature = "storage")]
@@ -48,7 +49,7 @@ impl ConnState {
 }
 
 #[allow(unused)]
-pub(self) enum Signal {
+pub enum Signal {
     Close(oneshot::Sender<Result<(), String>>),
 }
 

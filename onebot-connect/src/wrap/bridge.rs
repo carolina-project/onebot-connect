@@ -163,13 +163,7 @@ where
         let impl_handle = tokio::spawn(async move {
             let mut app = app;
             let mut event_rx = event_rx;
-            loop {
-                match close_rx.try_recv() {
-                    Err(TryRecvError::Empty) => {}
-                    _ => {
-                        break;
-                    }
-                };
+            while let Err(TryRecvError::Empty) = close_rx.try_recv() {
                 log::info!("waiting for impl connection...");
                 match impl_create_fn().create().await {
                     Ok((impl_src, mut impl_prov, msg)) => {

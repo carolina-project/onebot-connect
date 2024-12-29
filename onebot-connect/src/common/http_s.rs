@@ -1,4 +1,9 @@
-use std::{convert::Infallible, marker::PhantomData, net::SocketAddr, sync::Arc};
+use std::{
+    convert::Infallible,
+    marker::PhantomData,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 
 use bytes::Bytes;
 use http::{
@@ -9,7 +14,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use onebot_connect_interface::ClosedReason;
-use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -124,7 +128,7 @@ where
     type Output = R;
 
     async fn process_request(&self, req: Req) -> Result<Self::Output, Response> {
-        if let Some((header_token, query_token)) = &self.config.read().authorization {
+        if let Some((header_token, query_token)) = &self.config.read().unwrap().authorization {
             if let Some(header) = req.headers().get(AUTHORIZATION) {
                 if header != header_token {
                     return Err(mk_resp(StatusCode::FORBIDDEN, None::<Vec<u8>>));
@@ -155,7 +159,7 @@ where
             .map_err(|e| mk_resp(StatusCode::BAD_REQUEST, Some(e.to_string())))?
             != "application/json"
         {
-            return Err(mk_resp(StatusCode::NOT_ACCEPTABLE, None::<String>));
+            Err(mk_resp(StatusCode::NOT_ACCEPTABLE, None::<String>))
         } else {
             self.proc.process_request(req).await
         }
