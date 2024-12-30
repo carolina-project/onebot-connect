@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 # OneBot lib
 onebot-connect-interface = { path = "../onebot-connect-interface", features = ["app_recv"]}
-onebot-types = { git = "https://github.com/carolina-project/onebot-types.git", features = ["base64"]}
+onebot-types = { path = "../../onebot-types", features = ["base64"]}
 
 # Basic utilities
 log = "0.4"
