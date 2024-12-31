@@ -26,7 +26,7 @@ where
 
 impl<A> OBridge<A>
 where
-    A: OBAppProvider,
+    A: OBAppProvider<Output: 'static>,
 {
     pub async fn create<AC, IC, F>(
         app_conn: AC,
@@ -34,7 +34,7 @@ where
         event_buf_size: usize,
     ) -> Result<Self, Box<dyn ErrTrait>>
     where
-        AC: Connect<Provider = A>,
+        AC: Connect<Provider = A, Source: 'static>,
         IC: Create,
         F: Fn() -> IC + Send + 'static,
     {

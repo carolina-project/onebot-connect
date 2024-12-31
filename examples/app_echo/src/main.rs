@@ -84,11 +84,11 @@ async fn debug_cmd(
 }
 
 async fn handle_msg_event(mut event: MessageEvent, app: impl OBApp) -> eyre::Result<()> {
-    let Some(messages) = event.messages_mut() else {
+    let Some(messages) = event.message_mut() else {
         return Ok(());
     };
 
-    if messages.len() > 0 {
+    if !messages.is_empty() {
         let msg = messages.remove_raw(0);
         select_msg!(msg, {
             Text = text => {

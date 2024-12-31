@@ -61,11 +61,11 @@ mod recv {
     }
 
     /// Receiver for messages from OneBot Connect
-    pub trait MessageSource: Send + 'static {
+    pub trait MessageSource: Send {
         fn poll_message(&mut self) -> impl Future<Output = Option<RecvMessage>> + Send + '_;
     }
 
-    pub trait MessageSourceDyn: Send + 'static {
+    pub trait MessageSourceDyn: Send {
         fn poll_message(
             &mut self,
         ) -> Pin<Box<dyn Future<Output = Option<RecvMessage>> + Send + '_>>;
@@ -86,7 +86,7 @@ mod recv {
     }
 
     /// OneBot app side provider
-    pub trait OBAppProvider: Send + 'static {
+    pub trait OBAppProvider: Send {
         type Output: OBApp;
 
         fn use_event_context(&self) -> bool {
@@ -101,7 +101,7 @@ mod recv {
         fn provide(&mut self) -> Result<Self::Output, Error>;
     }
 
-    pub trait AppProviderDyn: Send + 'static {
+    pub trait AppProviderDyn: Send {
         fn use_event_context(&self) -> bool;
 
         fn set_event_context(&mut self, event: &RawEvent);
@@ -109,7 +109,7 @@ mod recv {
         fn provide(&mut self) -> Result<Box<dyn AppDyn>, Error>;
     }
 
-    impl<T: OBAppProvider> AppProviderDyn for T {
+    impl<T: OBAppProvider + 'static> AppProviderDyn for T {
         fn use_event_context(&self) -> bool {
             self.use_event_context()
         }
