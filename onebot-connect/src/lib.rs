@@ -14,7 +14,7 @@ pub mod ob11 {
     pub use onebot_types::ob11::*;
 }
 
-pub use onebot_types::{base::MessageChain, select_msg};
+pub use onebot_types::{base as types_base, select_msg};
 
 #[cfg(feature = "app")]
 pub mod app;

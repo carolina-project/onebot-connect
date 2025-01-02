@@ -2,15 +2,12 @@ use std::{future::Future, ops::Deref, pin::Pin};
 
 use crate::ConfigError;
 
-use super::Error;
+use crate::Error;
 use onebot_types::{
-    base::{MessageChain, OBAction},
+    base::OBAction,
     ob12::{
-        action::{
-            ActionDetail, GetLatestEvents, RespData, RespError, SendMessage, SendMessageResp,
-        },
-        event::RawEvent,
-        BotSelf, ChatTarget,
+        action::{ActionDetail, RespData, RespError},
+        BotSelf,
     },
     ValueMap,
 };
@@ -155,6 +152,8 @@ mod recv {
 pub use recv::*;
 use serde::Deserialize;
 use serde_value::Value;
+
+use super::AppExt;
 
 /// Application client, providing functions to interact with connection
 pub trait OBApp: Send + Sync {
@@ -324,84 +323,6 @@ macro_rules! deref_impl {
 }
 
 deref_impl!(Box<dyn AppDyn>);
-
-#[inline]
-fn process_resp<R>(resp: Option<R>) -> Result<R, Error> {
-    match resp {
-        Some(res) => Ok(res),
-        None => Err(Error::NotSupported("action response not supported".into())),
-    }
-}
-
-/// Extension trait for `App` to provide additional functionalities
-pub trait AppExt {
-    /// Send an action, return `Ok(Some(A::Resp))` if `App` is responsive, `Err()` if error
-    /// occurred while processing action.
-    fn send_action<A>(
-        &self,
-        action: A,
-        self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<Option<A::Resp>, Error>> + Send + '_
-    where
-        A: OBAction + Send + 'static;
-
-    /// Only send action, ignore its response excluding error.
-    fn send_action_only<A>(
-        &self,
-        action: A,
-        self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_
-    where
-        A: OBAction + Send + 'static,
-    {
-        let fut = self.send_action(action, self_);
-        async move { fut.await.map(|_| ()) }
-    }
-
-    /// Send an action, treating unresponsive as an error.
-    fn call_action<A>(
-        &self,
-        action: A,
-        self_: Option<BotSelf>,
-    ) -> impl Future<Output = Result<A::Resp, Error>> + Send + '_
-    where
-        A: OBAction + Send + 'static,
-    {
-        let fut = self.send_action(action, self_);
-        async move { fut.await?.ok_or_else(|| Error::missing("response")) }
-    }
-
-    fn get_latest_events(
-        &self,
-        limit: i64,
-        timeout: i64,
-        self_: Option<BotSelf>,
-    ) -> impl std::future::Future<Output = Result<Vec<RawEvent>, Error>> + Send + '_ {
-        let action = GetLatestEvents {
-            limit,
-            timeout,
-            extra: Default::default(),
-        };
-        let fut = self.send_action(action, self_);
-        async move { process_resp(fut.await?) }
-    }
-
-    fn send_message(
-        &self,
-        target: ChatTarget,
-        message: MessageChain,
-        self_: Option<BotSelf>,
-    ) -> impl std::future::Future<Output = Result<SendMessageResp, Error>> + Send {
-        self.call_action(
-            SendMessage {
-                target,
-                message,
-                extra: Default::default(),
-            },
-            self_,
-        )
-    }
-}
 
 impl<T: OBApp> AppExt for T {
     fn send_action<A>(

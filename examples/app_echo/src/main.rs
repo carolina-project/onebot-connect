@@ -1,7 +1,6 @@
 use std::env;
 
 use clap::{Parser, Subcommand};
-use eyre::OptionExt;
 use onebot_connect::{
     app::{
         compat::{http::OB11HttpConnect, ws::OB11WSConnect, ws_re::OB11WSReConnect},
@@ -11,7 +10,8 @@ use onebot_connect::{
         event::{MessageEvent, RawEvent},
         message::Text,
     },
-    select_msg, MessageChain,
+    select_msg,
+    types_base::IntoMessage,
 };
 
 #[derive(clap::Parser)]
@@ -70,15 +70,10 @@ async fn debug_cmd(
         }
         _ => "unknown debug type".into(),
     };
-
     use onebot_connect::app::AppExt;
 
-    app.send_message(
-        event.get_chat_target().ok_or_eyre("unknown chat target")?,
-        MessageChain::try_from_msg_trait(Text::new(msg))?,
-        None,
-    )
-    .await?;
+    app.send_message(event, Text::new(msg).into_msg_chain()?)
+        .await?;
 
     Ok(())
 }
@@ -88,8 +83,7 @@ async fn handle_msg_event(mut event: MessageEvent, app: impl OBApp) -> eyre::Res
         return Ok(());
     };
 
-    if !messages.is_empty() {
-        let msg = messages.remove_raw(0);
+    if let Some(msg) = messages.remove_raw(0) {
         select_msg!(msg, {
             Text = text => {
                 if text.text.starts_with("!debug") {
