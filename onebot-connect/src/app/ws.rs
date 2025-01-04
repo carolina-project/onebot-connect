@@ -75,7 +75,8 @@ impl CmdHandler<(Command, mpsc::UnboundedSender<tungstenite::Message>)> for WSHa
         let (cmd, action_tx) = cmd;
         match cmd {
             Command::Action(args, responder) => {
-                self.handle_action(action_tx, args, responder).await
+                self.handle_action(action_tx, args, responder).await?;
+                Ok(())
             }
             Command::Close => {
                 state.set_active(false);
