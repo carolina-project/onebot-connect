@@ -59,7 +59,7 @@ where
 }
 
 /// Handle http request and make an connection message sending to `RecvHandler`.
-pub(crate) trait HttpReqProc: Clone + Send + Sync + 'static {
+pub(crate) trait HttpReqProc: Clone + Send + Sync {
     type Output;
 
     fn process_request(
@@ -70,17 +70,18 @@ pub(crate) trait HttpReqProc: Clone + Send + Sync + 'static {
 
 impl<R, F, FR> HttpReqProc for F
 where
-    F: (Fn(Req) -> FR) + Clone + Send + Sync + 'static,
-    FR: Future<Output = Result<R, Response>> + Send + 'static,
+    F: (Fn(Req) -> FR) + Clone + Send + Sync,
+    FR: Future<Output = Result<R, Response>> + Send,
 {
     type Output = R;
 
     #[inline]
+    #[allow(clippy::manual_async_fn)]
     fn process_request(
         &self,
         req: Req,
     ) -> impl Future<Output = Result<Self::Output, Response>> + Send + '_ {
-        self(req)
+        async move { self(req).await }
     }
 }
 
@@ -275,13 +276,16 @@ where
     Msg: Send + 'static,
     Cmd: Send + 'static,
 {
-    pub async fn create_with_channel<Proc: HttpReqProc<Output = Body>>(
+    pub async fn create_with_channel<Proc>(
         addr: impl Into<SocketAddr>,
         handler: Handler,
         req_proc: Proc,
         cmd_rx: mpsc::UnboundedReceiver<Cmd>,
         msg_tx: mpsc::UnboundedSender<Msg>,
-    ) -> Result<(), AllErr> {
+    ) -> Result<(), AllErr>
+    where
+        Proc: HttpReqProc<Output = Body> + 'static,
+    {
         let (body_tx, body_rx) = mpsc::unbounded_channel();
         let (signal_tx, signal_rx) = mpsc::unbounded_channel();
 
@@ -306,11 +310,14 @@ where
         Ok(())
     }
 
-    pub async fn create<Proc: HttpReqProc<Output = Body>>(
+    pub async fn create<Proc>(
         addr: impl Into<SocketAddr>,
         handler: Handler,
         req_proc: Proc,
-    ) -> Result<(mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>), AllErr> {
+    ) -> Result<(mpsc::UnboundedSender<Cmd>, mpsc::UnboundedReceiver<Msg>), AllErr>
+    where
+        Proc: HttpReqProc<Output = Body> + 'static,
+    {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         Self::create_with_channel(addr, handler, req_proc, cmd_rx, msg_tx).await?;
@@ -331,7 +338,7 @@ where
         async fn handle_http<
             Body: Send + 'static,
             Resp: Serialize + Send + 'static,
-            Proc: HttpReqProc<Output = Body>,
+            Proc: HttpReqProc<Output = Body> + 'static,
         >(
             conn: TcpStream,
             serv: HttpServer<Body, Resp, Proc>,
