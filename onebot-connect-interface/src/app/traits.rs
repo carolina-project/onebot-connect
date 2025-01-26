@@ -290,7 +290,7 @@ macro_rules! deref_impl {
                 action: ActionDetail,
                 self_: Option<BotSelf>,
             ) -> impl Future<Output = Result<Option<RespData>, Error>> + Send + '_ {
-                self.send_action_dyn(action, self_)
+                self.deref().send_action_dyn(action, self_)
             }
 
             fn close(&self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
